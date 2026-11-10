@@ -7,7 +7,6 @@ import java.util.Optional;
 import java.util.Set;
 import org.keycloak.authentication.authenticators.util.AuthenticatorUtils;
 import org.keycloak.models.Constants;
-import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.protocol.oidc.utils.AmrUtils;
@@ -81,7 +80,7 @@ public final class Methods {
      * while its method is on in {@link SigninConfig#current()}. Anything
      * that can't be read counts as nothing.
      */
-    public static Set<String> ofSession(KeycloakSession s, RealmModel r, UserSessionModel u) {
+    public static Set<String> ofSession(RealmModel r, UserSessionModel u) {
         Set<String> out = new LinkedHashSet<>();
         if (r == null || u == null) {
             return out;
