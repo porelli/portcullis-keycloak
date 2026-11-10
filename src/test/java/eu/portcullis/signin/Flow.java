@@ -61,6 +61,12 @@ final class Flow {
     final MultivaluedHashMap<String, String> form = new MultivaluedHashMap<>();
     final Map<String, AuthenticationExecutionModel> executions = new HashMap<>();
     final Map<String, AuthenticatorConfigModel> configs = new HashMap<>();
+    /** Flow id → its executions, in order (for code that walks the flow). */
+    final Map<String, List<AuthenticationExecutionModel>> flows = new HashMap<>();
+    /** The client certificate chain this request presents (null: none). */
+    java.security.cert.X509Certificate[] certificates;
+    /** Keycloak's processor refuses a second, different user (USER_CONFLICT); off = a lenient processor. */
+    boolean strictUser;
     final Map<String, UserModel> users = new HashMap<>();
     final Map<String, UserModel> emails = new HashMap<>();
     final List<String> eventErrors = new ArrayList<>();
@@ -82,6 +88,7 @@ final class Flow {
     final LoginFormsProvider forms;
     final AuthenticationFlowContext context;
     final EventBuilder event;
+    AuthenticationFlowModel top;
 
     Flow() {
         WebAuthnMetadataService.setDefaultMetadata(Map.of());
@@ -90,6 +97,7 @@ final class Flow {
                 .ret("getName", REALM)
                 .on("getAuthenticationExecutionById", a -> executions.get((String) a[0]))
                 .on("getAuthenticatorConfigById", a -> configs.get((String) a[0]))
+                .on("getAuthenticationExecutionsStream", a -> flows.getOrDefault((String) a[0], List.of()).stream())
                 .on("isBruteForceProtected", a -> bruteForceProtected)
                 .on("isLoginWithEmailAllowed", a -> !emails.isEmpty())
                 .on("getWebAuthnPolicyPasswordless", a -> new WebAuthnPolicy())
@@ -124,6 +132,9 @@ final class Flow {
         PasswordHashProvider hash = Fake.named("hash").as(PasswordHashProvider.class);
         Map<Class<?>, Object> providers = new HashMap<>();
         providers.put(PasswordHashProvider.class, hash);
+        providers.put(org.keycloak.services.x509.X509ClientCertificateLookup.class,
+                Fake.named("x509 lookup").on("getCertificateChain", a -> certificates)
+                        .as(org.keycloak.services.x509.X509ClientCertificateLookup.class));
         Fake sessionFake = Fake.named("session")
                 .ret("users", userProvider)
                 .ret("getContext", keycloakContext)
@@ -159,6 +170,10 @@ final class Flow {
                     page = "login";
                     return null;
                 })
+                .on("createErrorPage", a -> {
+                    page = "error";
+                    return null;
+                })
                 .on("createWebAuthnErrorPage", a -> {
                     page = "webauthn-error";
                     return null;
@@ -181,6 +196,7 @@ final class Flow {
         execution.setId("exec-current");
         AuthenticationFlowModel top = new AuthenticationFlowModel();
         top.setId("flow-top");
+        this.top = top;
         org.keycloak.services.managers.BruteForceProtector protector =
                 Fake.named("brute force").as(org.keycloak.services.managers.BruteForceProtector.class);
         context = Fake.named("flow")
@@ -189,11 +205,18 @@ final class Flow {
                 .on("getRealm", a -> realm)
                 .on("getSession", a -> session)
                 .on("getUser", a -> user)
-                .on("setUser", a -> user = (UserModel) a[0])
+                .on("setUser", a -> {
+                    UserModel u = (UserModel) a[0];
+                    if (strictUser && user != null && !user.getId().equals(u.getId())) {
+                        throw new org.keycloak.authentication.AuthenticationFlowException(AuthenticationFlowError.USER_CONFLICT);
+                    }
+                    user = u;
+                    return null;
+                })
                 .on("clearUser", a -> user = null)
                 .on("attachUserSession", a -> attached = (UserSessionModel) a[0])
                 .on("getExecution", a -> execution)
-                .on("getTopLevelFlow", a -> top)
+                .on("getTopLevelFlow", a -> this.top)
                 .on("getAuthenticatorConfig", a -> authenticatorConfig)
                 .on("getHttpRequest", a -> http)
                 .on("getUriInfo", a -> uri)
@@ -221,6 +244,11 @@ final class Flow {
                 .on("getStatus", a -> status)
                 .on("getError", a -> error)
                 .as(AuthenticationFlowContext.class);
+    }
+
+    /** Whether Keycloak's flow would count this answer as a brute-force failure (FAILED, FAILURE_CHALLENGE). */
+    boolean countedByBruteForce() {
+        return status == FlowStatus.FAILED || status == FlowStatus.FAILURE_CHALLENGE;
     }
 
     /** A LoginFormsProvider whose fluent setters return itself. */

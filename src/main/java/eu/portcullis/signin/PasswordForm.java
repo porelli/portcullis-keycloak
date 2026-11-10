@@ -30,8 +30,10 @@ import org.keycloak.services.validation.Validation;
  * <li>It always refuses {@link #NO_PASSWORD} (compared lowercased, by the
  * name typed and by the account it finds, so an e-mail address doesn't get
  * around it), before any password is checked, with "Password sign-in isn't
- * available for this account": a {@code failureChallenge(INVALID_CREDENTIALS)}
- * like a wrong password, which Keycloak's brute-force protection counts.</li>
+ * available for this account": the form shown again ({@code forceChallenge}),
+ * which brute-force protection doesn't count — no password was checked, and
+ * counting would let anyone lock these accounts out of every method. The
+ * timing stays a wrong password's (a dummy hash).</li>
  * </ul>
  */
 public class PasswordForm extends UsernamePasswordForm {
@@ -106,12 +108,11 @@ public class PasswordForm extends UsernamePasswordForm {
         }
     }
 
-    /** The refusal, counted like a wrong password; the password is never checked. */
+    /** The refusal: the form again, not counted; the password is never checked. */
     private void refuse(AuthenticationFlowContext context, boolean userSet, String typed, UserModel target) {
         if (!userSet && typed != null) {
             String name = typed.trim();
             context.getEvent().detail(Details.USERNAME, name);
-            // Brute-force protection finds the account by this note (or the set user).
             context.getAuthenticationSession().setAuthNote(ATTEMPTED_USERNAME, name);
         }
         if (target != null) {
@@ -120,7 +121,7 @@ public class PasswordForm extends UsernamePasswordForm {
         AuthenticatorUtils.dummyHash(context);
         context.getEvent().error(Errors.INVALID_USER_CREDENTIALS);
         Response page = challenge(context, REFUSED, Validation.FIELD_PASSWORD);
-        context.failureChallenge(AuthenticationFlowError.INVALID_CREDENTIALS, page);
+        context.forceChallenge(page);
         if (!userSet) {
             context.clearUser();
         }

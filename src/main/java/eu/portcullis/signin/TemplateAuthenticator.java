@@ -1,8 +1,11 @@
 package eu.portcullis.signin;
 
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +17,12 @@ import org.jboss.logging.Logger;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.Authenticator;
+import org.keycloak.authentication.authenticators.broker.AbstractIdpAuthenticator;
+import org.keycloak.authentication.authenticators.broker.util.PostBrokerLoginConstants;
 import org.keycloak.common.util.KeycloakUriBuilder;
+import org.keycloak.events.Errors;
+import org.keycloak.models.AuthenticationExecutionModel;
+import org.keycloak.models.AuthenticatorConfigModel;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
@@ -39,12 +47,19 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * kind only when the person has one (their Keycloak credentials), a password
  * or a YubiKey certificate (unknown) only when it can be completed here (a
  * password for an account that may use one; a certificate presented on this
- * request); the first candidate not asked before in this authentication;</li>
+ * request that Keycloak's X.509 mapping resolves to this person); the first
+ * candidate not asked before in this authentication. Never inside a broker
+ * flow (the setup link's post-broker login): there an unmet template shows
+ * the page;</li>
  * <li><b>otherwise</b>: {@code portcullis-needs-stronger.ftl}, and the
  * sign-in goes no further: nothing is issued;</li>
  * <li><b>a missing, unreadable or invalid file</b> ({@code DENY_ALL}, or a
- * template the file doesn't hold): failure for every client.</li>
+ * template the file doesn't hold): an error page for every client (a
+ * challenge, so brute-force protection counts nothing); nobody signs in.</li>
  * </ul>
+ *
+ * <p>A step records the person's id ({@link #USER_NOTE}); the check fails
+ * ({@code USER_CONFLICT}) when the authentication ends with anyone else.
  *
  * <p>It also writes {@link FreshMapper#NOTE}, the method that signed in
  * this authentication ({@code portcullis.passkey.kind} or
@@ -61,6 +76,10 @@ public class TemplateAuthenticator implements Authenticator {
     /** Methods already asked for in this authentication (comma-separated). */
     static final String ASKED_NOTE = "portcullis.template.asked";
     static final String NONE = "none";
+    /** The id of the person a step was asked for. */
+    static final String USER_NOTE = "portcullis.template.user";
+    /** Message key of the page shown while the sign-in settings can't be read. */
+    static final String UNAVAILABLE = "portcullisSignInUnavailable";
 
     /** Notes carried over a step's flow reset (Keycloak's reset clears every authentication note). */
     private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE);
@@ -78,6 +97,15 @@ public class TemplateAuthenticator implements Authenticator {
         ClientModel client = authSession.getClient();
         String clientId = client == null ? null : client.getClientId();
         authSession.setClientNote(FreshMapper.NOTE, freshMethod(authSession, cfg));
+        UserModel user = context.getUser();
+        String stepUser = authSession.getAuthNote(USER_NOTE);
+        if (stepUser != null && (user == null || !stepUser.equals(user.getId()))) {
+            LOG.infof("portcullis: sign-in to %s refused: the account changed during a sign-in step", clientId);
+            context.clearUser();
+            context.getEvent().error(Errors.DIFFERENT_USER_AUTHENTICATED);
+            context.failure(AuthenticationFlowError.USER_CONFLICT);
+            return;
+        }
 
         Optional<Rule> template = cfg.templateForClient(clientId);
         if (template.isEmpty()) {
@@ -85,10 +113,11 @@ public class TemplateAuthenticator implements Authenticator {
             return;
         }
         Rule rule = template.get();
-        UserModel user = context.getUser();
         if (rule.alternatives().isEmpty() || user == null) {
             LOG.infof("portcullis: sign-in to %s refused: no usable sign-in template", clientId);
-            context.failure(AuthenticationFlowError.ACCESS_DENIED);
+            context.getEvent().error(Errors.ACCESS_DENIED);
+            Response page = context.form().setError(UNAVAILABLE).createErrorPage(Response.Status.FORBIDDEN);
+            context.forceChallenge(page);
             return;
         }
         Set<String> have = Methods.ofAuthentication(context.getRealm(), authSession, cfg);
@@ -100,10 +129,11 @@ public class TemplateAuthenticator implements Authenticator {
         Set<String> asked = asked(authSession);
         Predicate<String> completable = m -> switch (m) {
             case "password" -> !PasswordForm.refused(user.getUsername());
-            case "yubikey_cert" -> presentsCertificate(context);
+            case "yubikey_cert" -> certificateIsTheirs(context, user);
             default -> false;
         };
-        for (String m : candidates(rule, have, setUp, completable)) {
+        boolean broker = inBrokerFlow(authSession);
+        for (String m : broker ? List.<String>of() : candidates(rule, have, setUp, completable)) {
             if (!asked.contains(m)) {
                 ask(context, m, asked);
                 return;
@@ -194,6 +224,7 @@ public class TemplateAuthenticator implements Authenticator {
             kept.forEach(a::setAuthNote);
             a.setAuthNote(PcMethod.STEP_NOTE, m);
             a.setAuthNote(ASKED_NOTE, askedValue);
+            a.setAuthNote(USER_NOTE, user.getId());
         });
     }
 
@@ -210,9 +241,49 @@ public class TemplateAuthenticator implements Authenticator {
         return best;
     }
 
-    /** Whether this request presents a client certificate (Keycloak's X.509 lookup). */
-    protected boolean presentsCertificate(AuthenticationFlowContext context) {
-        return new X509Authenticator(false, config).presentsCertificate(context);
+    /** Whether the authentication runs a broker flow (first or post broker login: no flow reset there). */
+    static boolean inBrokerFlow(AuthenticationSessionModel a) {
+        return a.getAuthNote(PostBrokerLoginConstants.PBL_BROKERED_IDENTITY_CONTEXT) != null
+                || a.getAuthNote(AbstractIdpAuthenticator.BROKERED_CONTEXT_NOTE) != null;
+    }
+
+    /**
+     * Whether this request presents a certificate that the flow's
+     * {@code portcullis-x509} execution (its own X.509 config) maps to this
+     * person; another person's certificate, or none, can't complete a step.
+     */
+    protected boolean certificateIsTheirs(AuthenticationFlowContext context, UserModel user) {
+        AuthenticatorConfigModel x509 = x509Config(context);
+        if (x509 == null) {
+            return false;
+        }
+        return new X509Authenticator(false, config).certificateUser(context, x509)
+                .map(u -> u.getId().equals(user.getId()))
+                .orElse(false);
+    }
+
+    /** The config of the first {@code portcullis-x509} execution of this flow (sub-flows included). */
+    static AuthenticatorConfigModel x509Config(AuthenticationFlowContext context) {
+        RealmModel realm = context.getRealm();
+        if (context.getTopLevelFlow() == null) {
+            return null;
+        }
+        Deque<String> flows = new ArrayDeque<>(List.of(context.getTopLevelFlow().getId()));
+        Set<String> seen = new HashSet<>();
+        while (!flows.isEmpty()) {
+            String flow = flows.pop();
+            if (!seen.add(flow)) {
+                continue;
+            }
+            for (AuthenticationExecutionModel e : realm.getAuthenticationExecutionsStream(flow).toList()) {
+                if (e.isAuthenticatorFlow() && e.getFlowId() != null) {
+                    flows.add(e.getFlowId());
+                } else if (X509AuthenticatorFactory.PROVIDER_ID.equals(e.getAuthenticator()) && e.getAuthenticatorConfig() != null) {
+                    return realm.getAuthenticatorConfigById(e.getAuthenticatorConfig());
+                }
+            }
+        }
+        return null;
     }
 
     /** The account console's signing-in page of this realm. */

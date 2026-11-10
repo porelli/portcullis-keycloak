@@ -29,6 +29,9 @@ val liquibase = "4.33.0"          // quarkus-bom 3.40.1
 val h2 = "2.4.240"                // quarkus-bom 3.40.1
 // Test-only: the needs-stronger page rendered as Keycloak renders it.
 val freemarker = "2.3.35"         // keycloak-parent 26.8.1 freemarker.version
+// Test-only: Keycloak's X.509 authenticator links its CRL / OCSP loader (Apache HttpClient).
+val httpclient = "4.5.14"         // quarkus-bom 3.40.1
+val httpcore = "4.4.16"           // quarkus-bom 3.40.1
 
 dependencies {
     for (a in listOf(
@@ -62,6 +65,8 @@ dependencies {
     testImplementation("org.liquibase:liquibase-core:$liquibase")
     testRuntimeOnly("com.h2database:h2:$h2")
     testImplementation("org.freemarker:freemarker:$freemarker")
+    testRuntimeOnly("org.apache.httpcomponents:httpclient:$httpclient") { isTransitive = false }
+    testRuntimeOnly("org.apache.httpcomponents:httpcore:$httpcore") { isTransitive = false }
     // Keycloak's JsonSerialization (credential data, completed executions) registers these.
     testRuntimeOnly("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:$jackson")
     testRuntimeOnly("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:$jackson")

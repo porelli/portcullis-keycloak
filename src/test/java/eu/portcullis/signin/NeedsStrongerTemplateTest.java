@@ -92,7 +92,7 @@ class NeedsStrongerTemplateTest {
                 List.of(Set.of("passkey_synced"), Set.of("yubikey_cert")), Set.of(), true, acct);
         String html = render(page).replaceAll("\\s+", " ");
         assertTrue(html.contains("Gitea needs a stronger sign-in"), html);
-        assertTrue(html.contains("You signed in with <b>a password</b>. Gitea accepts any one of:"), html);
+        assertTrue(html.contains("You signed in with a <b>password</b>. Gitea accepts any one of:"), html);
         assertTrue(html.contains("<li>a passkey <span class=\"portcullis-sub\">— you don&#39;t have one yet</span></li>"), html);
         assertTrue(html.contains("<li>a YubiKey certificate</li>"), html);
         assertTrue(html.contains("id=\"needs-stronger\""), html);

@@ -3,7 +3,8 @@
      page matches. Every value relies on FreeMarker's HTML auto-escaping
      (Keycloak renders .ftl with the HTML output format), never unescaped. -->
 <#import "template.ftl" as layout>
-<#macro methods list><#list list as m>${msg("portcullisMethod_" + m)}<#sep> ${msg("portcullisAnd")} </#sep></#list></#macro>
+<#-- "a <b>password</b> and a <b>security key</b>": bold only the method words where asked. -->
+<#macro methods list bold=false><#list list as m>${msg("portcullisArticle_" + m)} <#if bold><b>${msg("portcullisMethod_" + m)}</b><#else>${msg("portcullisMethod_" + m)}</#if><#sep> ${msg("portcullisAnd")} </#sep></#list></#macro>
 <@layout.registrationLayout displayMessage=false; section>
     <#if section = "header">
         ${msg("portcullisNeedsStrongerTitle", portcullis.app)}
@@ -11,7 +12,7 @@
         <div id="needs-stronger">
             <p>
                 <#if portcullis.signedIn?has_content>
-                    ${msg("portcullisNeedsStrongerSignedIn")} <b><@methods list=portcullis.signedIn/></b>.
+                    ${msg("portcullisNeedsStrongerSignedIn")} <@methods list=portcullis.signedIn bold=true/>.
                 <#else>
                     ${msg("portcullisNeedsStrongerSignedInNothing", portcullis.app)}
                 </#if>

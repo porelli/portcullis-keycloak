@@ -32,7 +32,7 @@ class X509AuthenticatorTest {
         a.authenticate(f.context);
         assertEquals(FlowStatus.ATTEMPTED, f.status);
         assertNull(f.authNotes.get(X509Authenticator.METHOD_NOTE));
-        assertFalse(a.presentsCertificate(f.context));
+        assertFalse(a.certificateUser(f.context, f.authenticatorConfig).isPresent());
     }
 
     @Test

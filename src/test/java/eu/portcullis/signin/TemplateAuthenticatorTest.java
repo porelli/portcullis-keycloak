@@ -19,7 +19,7 @@ class TemplateAuthenticatorTest {
     private static TemplateAuthenticator check(SigninConfig cfg, boolean certificate) {
         return new TemplateAuthenticator(() -> cfg) {
             @Override
-            protected boolean presentsCertificate(AuthenticationFlowContext context) {
+            protected boolean certificateIsTheirs(AuthenticationFlowContext context, org.keycloak.models.UserModel user) {
                 return certificate;
             }
         };
@@ -84,8 +84,11 @@ class TemplateAuthenticatorTest {
             Flow f = signedIn("hwk", "mtls");
             f.clientId = client;
             check(SigninConfig.DENY_ALL, true).authenticate(f.context);
-            assertEquals(FlowStatus.FAILED, f.status, client);
-            assertEquals(AuthenticationFlowError.ACCESS_DENIED, f.error, client);
+            // An error page, nobody signs in, and brute-force protection counts nothing.
+            assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, client);
+            assertEquals("error", f.page, client);
+            assertEquals(List.of(TemplateAuthenticator.UNAVAILABLE), f.formErrors, client);
+            assertFalse(f.countedByBruteForce(), client);
         }
     }
 
@@ -118,6 +121,41 @@ class TemplateAuthenticatorTest {
         f.completed("spk", "hwk");
         check(cfg, false).authenticate(f.context);
         assertEquals(FlowStatus.SUCCESS, f.status);
+    }
+
+    @Test
+    void stepFailsWhenTheAccountChanged() {
+        SigninConfig cfg = Configs.client(Configs.DEFAULT_METHODS, false, Configs.YUBIKEY_AND_CERT);
+        Flow f = signedIn("hwk");
+        check(cfg, true).authenticate(f.context);
+        reset(f);
+        assertEquals("u-alice", f.authNotes.get(TemplateAuthenticator.USER_NOTE));
+        // The re-run ends with someone else (their certificate): refused, nobody left set.
+        f.user = f.person("u-mallory", "mallory").model;
+        f.completed("hwk", "mtls");
+        check(cfg, true).authenticate(f.context);
+        assertEquals(FlowStatus.FAILED, f.status);
+        assertEquals(AuthenticationFlowError.USER_CONFLICT, f.error);
+        assertEquals(null, f.user);
+    }
+
+    @Test
+    void brokerFlowNeverResets() {
+        // The setup link's post-broker login: an unmet listed client shows the page, no re-run.
+        SigninConfig cfg = Configs.client(Configs.DEFAULT_METHODS, false, Configs.SYNCED_AND_KEY);
+        Flow f = signedIn("spk");
+        f.authNotes.put(org.keycloak.authentication.authenticators.broker.util.PostBrokerLoginConstants.PBL_BROKERED_IDENTITY_CONTEXT, "{}");
+        check(cfg, false).authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        assertEquals(TemplateAuthenticator.PAGE, f.page);
+        assertEquals("none", f.clientNotes.get(FreshMapper.NOTE));
+
+        Flow unlisted = signedIn("inv");
+        unlisted.clientId = "portcullis-forward-auth";
+        unlisted.authNotes.put(org.keycloak.authentication.authenticators.broker.util.PostBrokerLoginConstants.PBL_BROKERED_IDENTITY_CONTEXT, "{}");
+        check(cfg, false).authenticate(unlisted.context);
+        assertEquals(FlowStatus.SUCCESS, unlisted.status);
+        assertEquals("none", unlisted.clientNotes.get(FreshMapper.NOTE), "a setup link sets no pc_fresh");
     }
 
     @Test

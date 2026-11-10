@@ -1,6 +1,7 @@
 package eu.portcullis.signin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -63,11 +64,11 @@ class PasswordFormTest {
     void refusesAdminAndHubAccount() {
         for (String typed : new String[] {"admin", "Admin", " ADMIN ", "portcullis-hub", "Portcullis-Hub", "root@example.com"}) {
             Flow f = login(typed);
-            assertEquals(FlowStatus.FAILURE_CHALLENGE, f.status, typed);
-            // Counted like a wrong password: Keycloak's processor passes a failure
-            // to brute-force protection for the account it finds (the set user or
-            // the attempted username).
-            assertEquals(AuthenticationFlowError.INVALID_CREDENTIALS, f.error, typed);
+            // The form again with the message; brute-force protection counts nothing
+            // (no password was checked), so nobody can lock these accounts out.
+            assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, typed);
+            assertFalse(f.countedByBruteForce(), typed);
+            assertEquals("login", f.page, typed);
             assertEquals(typed.trim(), f.authNotes.get(AbstractUsernameFormAuthenticator.ATTEMPTED_USERNAME), typed);
             assertEquals(java.util.List.of(Errors.INVALID_USER_CREDENTIALS), f.eventErrors, typed);
             assertEquals(java.util.List.of(PasswordForm.REFUSED), f.formErrorsOrFieldErrors(), typed);
@@ -78,6 +79,12 @@ class PasswordFormTest {
         }
         Flow alice = login("alice");
         assertEquals(FlowStatus.SUCCESS, alice.status);
+        Flow wrong = new Flow(); // a wrong password, for comparison, is counted
+        wrong.person("u-alice", "alice").password = RIGHT;
+        wrong.form.putSingle("username", "alice");
+        wrong.form.putSingle("password", "nope");
+        new PasswordForm(() -> ON).action(wrong.context);
+        assertTrue(wrong.countedByBruteForce());
         assertSame(alice.users.get("alice"), alice.user);
     }
 
