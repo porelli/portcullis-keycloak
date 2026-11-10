@@ -1,0 +1,36 @@
+# Merged by .github/workflows/dependabot-automerge.yml once Build and Push
+# passes (patch, minor, digest-only); majors get `major-update` and wait for a
+# manual merge; pre-releases are closed; red CI opens an `update-failed`
+# issue.
+#
+# Keycloak: the base image (docker) and the org.keycloak / webauthn4j /
+# jackson / jboss-logging artifacts (gradle) must stay at the versions that
+# Keycloak release ships; bump them together (CLAUDE.md "Supply chain").
+# A Gradle bump also needs gradle/verification-metadata.xml regenerated, which
+# Dependabot doesn't do: its CI fails strict verification until someone
+# pushes the regenerated file to the PR branch (then it's merged by hand).
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gradle:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

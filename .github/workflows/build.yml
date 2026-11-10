@@ -1,0 +1,231 @@
+name: Build and Push
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  # Feature branches (e.g. the cross-repo `signin` branch): tests and an
+  # image build, never a push. On main it publishes `edge` like a push: the
+  # Dependabot auto-merge job dispatches it after a merge (a GITHUB_TOKEN
+  # merge starts no push run). Dispatching on main needs write access, the
+  # same trust as pushing to main.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR and main builds are cancelled (the newest main build
+  # publishes edge anyway); tag builds have their own ref and always finish.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  # Gradle `test` with --dependency-verification strict, in the Dockerfile's
+  # test stage (the pinned Gradle image).
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Gradle test (docker buildx build --target test)
+        run: docker buildx build --progress=plain --target test .
+
+      # .github/automerge/automerge.sh (Dependabot auto-merge): fake gh +
+      # fixtures, no network.
+      - name: Dependabot auto-merge tests
+        run: |
+          shellcheck -S warning .github/automerge/*.sh
+          bash .github/automerge/test.sh
+
+  # The shared rule vectors (contract §8.1): src/test/resources/
+  # signin_vectors.json is a byte copy of portcullis-hub's
+  # internal/signin/testdata/vectors.json on the same-named branch when it
+  # exists (cross-repo feature branches land together), else main. When the
+  # Hub ref has no such file yet, or this repo has no copy yet (the
+  # scaffolding-only main), it prints a notice and passes.
+  vectors:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare with the Hub's vectors
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          own=src/test/resources/signin_vectors.json
+          if [ ! -f "$own" ]; then
+            echo "::notice::$own isn't in this ref yet: nothing to compare"
+            exit 0
+          fi
+          url="https://github.com/porelli/portcullis-hub"
+          ref=main
+          if [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$REF" != main ] && git ls-remote --exit-code --heads "$url" "$REF" >/dev/null; then ref="$REF"; fi
+          echo "portcullis-hub: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+          hub="$RUNNER_TEMP/hub_vectors.json"
+          code=$(curl -sS -o "$hub" -w '%{http_code}' "https://raw.githubusercontent.com/porelli/portcullis-hub/$ref/internal/signin/testdata/vectors.json")
+          case "$code" in
+            200) ;;
+            404)
+              echo "::notice::portcullis-hub $ref has no internal/signin/testdata/vectors.json yet: nothing to compare"
+              exit 0 ;;
+            *)
+              echo "::error::fetching the Hub's vectors from $ref: HTTP $code"
+              exit 1 ;;
+          esac
+          if ! cmp "$own" "$hub"; then
+            echo "::error::$own differs from portcullis-hub $ref internal/signin/testdata/vectors.json: copy it byte for byte"
+            exit 1
+          fi
+          echo "vectors match portcullis-hub $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: [test, vectors]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push to GHCR
+      id-token: write   # keyless cosign signing (GitHub OIDC)
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      # Pushes (main → edge, v* tags) and dispatched runs on main (the
+      # auto-merge job, after a Dependabot merge) publish; PRs and dispatched
+      # feature-branch runs just build.
+      PUSH: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+      # Contract §8.1 / plan D5: every provider id the extension ships so far
+      # (space separated). The smoke run checks Keycloak lists each one.
+      PROVIDER_IDS: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The runner's platform only, loaded into the local daemon for the
+      # smoke run.
+      - name: Build for the smoke run
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: portcullis-keycloak:smoke
+          cache-from: type=gha,scope=image-main
+
+      # start-dev with a throwaway admin, then GET /admin/serverinfo: every
+      # id of PROVIDER_IDS must be listed. The admin password is random and
+      # never on argv: docker gets it from the environment (-e NAME), curl
+      # from a 0600 file.
+      - name: Smoke run (start-dev, admin serverinfo)
+        run: |
+          set -euo pipefail
+          umask 077
+          work=$(mktemp -d)
+          KC_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 24)
+          export KC_BOOTSTRAP_ADMIN_PASSWORD KC_BOOTSTRAP_ADMIN_USERNAME=smoke
+          printf 'grant_type=password&client_id=admin-cli&username=smoke&password=%s' "$KC_BOOTSTRAP_ADMIN_PASSWORD" > "$work/token-form"
+          cid=$(docker create --name kc-smoke -p 127.0.0.1:8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+            portcullis-keycloak:smoke start-dev)
+          docker cp "$cid:/opt/keycloak/providers/portcullis-signin.jar" "$work/" >/dev/null
+          echo "jar in the image: $(stat -c %s "$work/portcullis-signin.jar") bytes"
+          docker start kc-smoke >/dev/null
+          token=""
+          for _ in $(seq 1 90); do
+            if token=$(curl -fsS --data-binary "@$work/token-form" \
+                 -H 'Content-Type: application/x-www-form-urlencoded' \
+                 http://127.0.0.1:8080/realms/master/protocol/openid-connect/token 2>/dev/null | jq -r .access_token) \
+               && [ -n "$token" ] && [ "$token" != null ]; then break; fi
+            token=""
+            sleep 2
+          done
+          if [ -z "$token" ]; then
+            docker logs kc-smoke 2>&1 | tail -100
+            echo "::error::Keycloak didn't answer the token endpoint"
+            exit 1
+          fi
+          printf 'Authorization: Bearer %s\n' "$token" > "$work/auth-header"
+          curl -fsS -H "@$work/auth-header" http://127.0.0.1:8080/admin/serverinfo > "$work/serverinfo.json"
+          jq -r '[.providers[].providers | keys[]] | .[]' "$work/serverinfo.json" | sort -u > "$work/ids"
+          echo "Keycloak lists $(wc -l < "$work/ids") provider ids"
+          missing=0
+          for id in $PROVIDER_IDS; do
+            if grep -qxF "$id" "$work/ids"; then echo "ok  $id"; else echo "::error::provider $id isn't listed"; missing=1; fi
+          done
+          if docker logs kc-smoke 2>&1 | grep -iE 'portcullis.*(ERROR|Exception)|(ERROR|Exception).*portcullis'; then
+            echo "::error::Keycloak logged an error naming portcullis"
+            missing=1
+          fi
+          docker rm -f kc-smoke >/dev/null
+          rm -rf "$work"
+          exit "$missing"
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Contract §1: X.Y.Z, X.Y, X and sha-<short> for v* tags; edge for main;
+      # never latest.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-,format=short,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=edge,branch=main
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: ${{ env.PUSH == 'true' }}
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          # Layer cache. Only main's publishing runs (push, or dispatch on
+          # main) write it (mode=max: every stage, both platforms, under one
+          # content-addressed scope); PRs, branches and tags only read it.
+          cache-from: type=gha,scope=image-main
+          cache-to: ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) && 'type=gha,scope=image-main,mode=max' || '' }}
+
+      - name: Install cosign
+        if: env.PUSH == 'true'
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      # Sign the pushed manifest-list digest (covers every tag and platform).
+      - name: Sign image (keyless)
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
