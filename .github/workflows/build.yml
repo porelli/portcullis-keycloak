@@ -185,6 +185,13 @@ jobs:
           for id in $PROVIDER_IDS; do
             if grep -qxF "$id" "$work/ids"; then echo "ok  $id"; else echo "::error::provider $id isn't listed"; missing=1; fi
           done
+          # The overrides are the ones in use, not the stock factories of
+          # the same id (both are listed either way).
+          for id in webauthn-register-passwordless webauthn-register; do
+            marker=$(jq -r --arg id "$id" '.providers["required-action"].providers[$id].operationalInfo.portcullis // ""' "$work/serverinfo.json")
+            order=$(jq -r --arg id "$id" '.providers["required-action"].providers[$id].order // 0' "$work/serverinfo.json")
+            if [ "$marker" = passkey-kinds ] && [ "$order" = 1 ]; then echo "ok  $id is the Portcullis override"; else echo "::error::required action $id isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
+          done
           if docker logs kc-smoke 2>&1 | grep -iE 'portcullis.*(ERROR|Exception)|(ERROR|Exception).*portcullis'; then
             echo "::error::Keycloak logged an error naming portcullis"
             missing=1

@@ -73,9 +73,9 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
     /** The amr of a setup-link session (contract §8 "Invite links"). */
     static final String SETUP_LINK_AMR = "inv";
 
-    static final String REFUSED_STRONGER =
-            "This passkey is stronger than the way you signed in. Sign in with a stronger method first, or ask your admin.";
-    static final String REFUSED_UNREADABLE = "This passkey's attestation couldn't be read.";
+    /** Message keys (the jar's {@code theme-resources/messages/messages_en.properties}). */
+    static final String REFUSED_STRONGER = "portcullisPasskeyStrongerThanSession";
+    static final String REFUSED_UNREADABLE = "portcullisPasskeyAttestationUnreadable";
 
     private static final List<String> KINDS_STRONGEST_FIRST =
             List.of(PasskeyClassifier.SECURITY_KEY, PasskeyClassifier.DEVICE, PasskeyClassifier.SYNCED);
@@ -233,7 +233,7 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
                     .findFirst()
                     // Fail closed: the transaction rolls back, nothing is kept.
                     .orElseThrow(() -> new IllegalStateException("portcullis: the new passkey credential wasn't found"));
-            PasskeyStore.of(session).put(realm, user, created, a, kind, cap.cappedAt());
+            PasskeyStore.of(session).put(realm, user, created, a, kind, cap.cappedAt(), cfg.mdsSerial());
             LOG.infof("portcullis: passkey registered for %s: AAGUID %s, kind %s", user.getUsername(), a.aaguid(), kind);
         } finally {
             pending = null;

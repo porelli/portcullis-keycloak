@@ -6,6 +6,7 @@ import org.keycloak.connections.jpa.entityprovider.JpaEntityProvider;
 import org.keycloak.connections.jpa.entityprovider.JpaEntityProviderFactory;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.RealmModel;
 
 /**
  * {@code portcullis-passkey-store} (plan D5): the extension's JPA entities and
@@ -51,7 +52,12 @@ public final class PasskeyStoreProviderFactory implements JpaEntityProviderFacto
 
     @Override
     public void postInit(KeycloakSessionFactory factory) {
-        // nothing to do
+        // A deleted realm's rows go with it.
+        factory.register(event -> {
+            if (event instanceof RealmModel.RealmRemovedEvent e) {
+                PasskeyStore.of(e.getKeycloakSession()).removeRealm(e.getRealm().getId());
+            }
+        });
     }
 
     @Override

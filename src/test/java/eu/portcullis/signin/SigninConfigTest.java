@@ -147,6 +147,17 @@ class SigninConfigTest {
             assertEquals(87, c.mdsSerial());
             assertTrue(c.authenticator(UUID.fromString(AAGUID)).isEmpty(), "the entry with the bad root is left out");
             assertEquals("passkey_device", c.authenticator(UUID.fromString(other)).orElseThrow().kind(), "the other entry stays");
+
+            // A revoked entry with the same bad root is kept, without roots: the revocation still counts.
+            String revoked = body.replace("\"status\": \"certified\", \"roots\": [\"" + root() + "\", \"" + bad + "\"]",
+                    "\"status\": \"revoked\", \"roots\": [\"" + root() + "\", \"" + bad + "\"]");
+            assertNotEquals(body, revoked, "the revoked mutation applies");
+            SigninConfig r = SigninConfig.parse(revoked.getBytes(StandardCharsets.UTF_8));
+            SigninConfig.Trust t = r.authenticator(UUID.fromString(AAGUID)).orElseThrow();
+            assertEquals("revoked", t.status());
+            assertEquals("security_key", t.kind());
+            assertTrue(t.roots().isEmpty());
+            assertEquals("passkey_device", r.authenticator(UUID.fromString(other)).orElseThrow().kind());
         }
     }
 

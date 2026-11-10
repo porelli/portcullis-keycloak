@@ -52,6 +52,8 @@ final class TestDb implements AutoCloseable {
                 .provider("org.hibernate.jpa.HibernatePersistenceProvider")
                 .managedClass(PasskeyEntity.class)
                 .managedClass(SigninStateEntity.class)
+                .managedClass(TestCredentials.Local.class)
+                .managedClass(TestCredentials.Federated.class)
                 .property(PersistenceConfiguration.JDBC_URL, url)
                 .property(PersistenceConfiguration.JDBC_USER, "sa")
                 .property(PersistenceConfiguration.JDBC_PASSWORD, "")

@@ -108,10 +108,13 @@ public final class PasskeyClassifier {
         };
     }
 
-    /** The weaker of two kinds; a null cap is no cap. */
+    /** The weaker of two kinds; a null cap is no cap, an unknown one caps at synced. */
     static String atMost(String kind, String cap) {
-        if (cap == null || rank(cap) < 0) {
+        if (cap == null) {
             return kind;
+        }
+        if (rank(cap) < 0) {
+            return SYNCED;
         }
         return rank(kind) <= rank(cap) ? kind : cap;
     }

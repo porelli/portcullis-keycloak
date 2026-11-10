@@ -1,7 +1,6 @@
 package eu.portcullis.signin.store;
 
 import eu.portcullis.signin.PasskeyClassifier;
-import eu.portcullis.signin.SigninConfig;
 import eu.portcullis.signin.StoredAttestation;
 import jakarta.persistence.EntityManager;
 import java.time.Instant;
@@ -39,9 +38,9 @@ public final class PasskeyStore {
         return new PasskeyStore(s.getProvider(JpaConnectionProvider.class).getEntityManager());
     }
 
-    /** Stores a new passkey's attestation, classified now against the current file's serial. */
-    public void put(RealmModel r, UserModel u, CredentialModel c, StoredAttestation a, String kind, String cappedAt) {
-        put(r, u, c, a, kind, cappedAt, SigninConfig.current().mdsSerial(), Instant.now());
+    /** Stores a new passkey's attestation, classified now against {@code serial} (the file's {@code mds.serial} it was decided with). */
+    public void put(RealmModel r, UserModel u, CredentialModel c, StoredAttestation a, String kind, String cappedAt, long serial) {
+        put(r, u, c, a, kind, cappedAt, serial, Instant.now());
     }
 
     /** Stores a new passkey's attestation, classified against {@code serial} at {@code at}. */
@@ -114,27 +113,55 @@ public final class PasskeyStore {
         return true;
     }
 
+    private static final String CREDENTIAL_EXISTS =
+            " exists (select c.id from CredentialEntity c where c.id = %1$s)"
+                    + " or exists (select f.id from FederatedUserCredentialEntity f where f.id = %1$s)";
+
     /**
      * Removes the realm's rows whose Keycloak credential is gone (Keycloak
-     * 26.8.1 has no credential-removal event): neither in {@code CREDENTIAL}
-     * (local and imported users) nor in {@code FED_USER_CREDENTIAL}. Returns
-     * how many.
+     * 26.8.1 has no credential-removal event): neither a
+     * {@code CredentialEntity} (local and imported users) nor a
+     * {@code FederatedUserCredentialEntity}. Returns how many.
      */
     public int removeOrphans(RealmModel r) {
-        @SuppressWarnings("unchecked")
-        List<Object> ids = em.createNativeQuery(
-                "SELECT p.CREDENTIAL_ID FROM PORTCULLIS_PASSKEY p WHERE p.REALM_ID = ?1"
-                        + " AND NOT EXISTS (SELECT 1 FROM CREDENTIAL c WHERE c.ID = p.CREDENTIAL_ID)"
-                        + " AND NOT EXISTS (SELECT 1 FROM FED_USER_CREDENTIAL f WHERE f.ID = p.CREDENTIAL_ID)")
-                .setParameter(1, r.getId())
+        List<String> ids = em.createQuery(
+                "select p.credentialId from PortcullisPasskey p where p.realmId = :realmId and not ("
+                        + CREDENTIAL_EXISTS.formatted("p.credentialId") + ")", String.class)
+                .setParameter("realmId", r.getId())
                 .getResultList();
         int n = 0;
-        for (Object id : ids) {
-            if (remove(String.valueOf(id))) {
+        for (String id : ids) {
+            if (remove(id)) {
                 n++;
             }
         }
         return n;
+    }
+
+    /** Whether Keycloak still has a credential of this id (local or federated). */
+    public boolean credentialExists(String credentialId) {
+        return !em.createQuery("select c.id from CredentialEntity c where c.id = :id", String.class)
+                        .setParameter("id", credentialId).setMaxResults(1).getResultList().isEmpty()
+                || !em.createQuery("select f.id from FederatedUserCredentialEntity f where f.id = :id", String.class)
+                        .setParameter("id", credentialId).setMaxResults(1).getResultList().isEmpty();
+    }
+
+    /** Every row of a deleted realm (Keycloak's {@code RealmRemovedEvent}). */
+    public void removeRealm(String realmId) {
+        em.createQuery("delete from PortcullisPasskey p where p.realmId = :realmId").setParameter("realmId", realmId).executeUpdate();
+        em.createQuery("delete from PortcullisSigninState s where s.realmId = :realmId").setParameter("realmId", realmId).executeUpdate();
+    }
+
+    /**
+     * Startup check: the entities are registered with Keycloak's persistence
+     * unit and the tables exist (throws otherwise).
+     */
+    public void selfCheck() {
+        em.createNamedQuery("portcullisPasskeysByRealm", PasskeyEntity.class)
+                .setParameter("realmId", "")
+                .setMaxResults(0)
+                .getResultList();
+        em.find(SigninStateEntity.class, "");
     }
 
     /** The last {@code mds.serial} reclassification applied in a realm; -1 before the first. */

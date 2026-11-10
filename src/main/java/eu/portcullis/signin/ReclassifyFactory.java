@@ -1,5 +1,7 @@
 package eu.portcullis.signin;
 
+import eu.portcullis.signin.store.PasskeyStore;
+import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
@@ -17,6 +19,7 @@ import org.keycloak.timer.TimerProvider;
  */
 public final class ReclassifyFactory implements PortcullisTaskSpi.Factory, ProviderEventListener {
     public static final String PROVIDER_ID = Reclassify.TASK_NAME;
+    private static final Logger LOG = Logger.getLogger(ReclassifyFactory.class);
 
     private static final PortcullisTaskSpi.Task NOTHING = () -> {};
 
@@ -41,6 +44,15 @@ public final class ReclassifyFactory implements PortcullisTaskSpi.Factory, Provi
     @Override
     public void onEvent(ProviderEvent event) {
         if (event instanceof PostMigrationEvent) {
+            // Startup self-check: the store's entities reached Keycloak's
+            // persistence unit and the changelog ran. Logged as an ERROR
+            // naming portcullis (CI's smoke run fails on it).
+            try {
+                KeycloakModelUtils.runJobInTransaction(factory, s -> PasskeyStore.of(s).selfCheck());
+            } catch (RuntimeException e) {
+                LOG.errorf("portcullis: the passkey store isn't usable (%s): passkey registration and reclassification will fail",
+                        e.getClass().getName());
+            }
             KeycloakModelUtils.runJobInTransaction(factory, s -> {
                 TimerProvider timer = s.getProvider(TimerProvider.class);
                 timer.schedule(new ClusterAwareScheduledTaskRunner(factory, new Reclassify(), Reclassify.INTERVAL_MS),

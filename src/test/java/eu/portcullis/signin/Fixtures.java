@@ -53,6 +53,18 @@ final class Fixtures {
     static final UUID ZERO = new UUID(0, 0);
 
     private static final ObjectConverter OBJECTS = new ObjectConverter();
+
+    /** The relying party of every fixture (webauthn4j-test's client origin is http://example.com). */
+    static final String RP_ID = "example.com";
+    static final byte[] RP_ID_HASH = sha256(RP_ID);
+
+    private static byte[] sha256(String s) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
     static final byte BIT_UP = AuthenticatorData.BIT_UP;
     static final byte BIT_UV = AuthenticatorData.BIT_UV;
     static final byte BIT_AT = AuthenticatorData.BIT_AT;
@@ -113,6 +125,40 @@ final class Fixtures {
         return create(EmulatorUtil.createClientPlatform(EmulatorUtil.FIDO_U2F_AUTHENTICATOR));
     }
 
+    /** A raw registration: what the browser posts, and the challenge it answered. */
+    record Registration(byte[] attestationObject, byte[] clientDataJSON, com.webauthn4j.data.client.challenge.Challenge challenge) {}
+
+    static final com.webauthn4j.data.client.Origin ORIGIN = new com.webauthn4j.data.client.Origin("http://example.com");
+
+    static Registration register(WebAuthnModelAuthenticator authenticator) {
+        return registration(EmulatorUtil.createClientPlatform(authenticator));
+    }
+
+    private static Registration registration(com.webauthn4j.test.client.ClientPlatform platform) {
+        DefaultChallenge challenge = new DefaultChallenge();
+        PublicKeyCredentialCreationOptions o = new PublicKeyCredentialCreationOptions(
+                new PublicKeyCredentialRpEntity(RP_ID, RP_ID),
+                new PublicKeyCredentialUserEntity(new byte[] {1, 2, 3}, "alice", "alice"),
+                challenge,
+                List.of(new PublicKeyCredentialParameters(PublicKeyCredentialType.PUBLIC_KEY, COSEAlgorithmIdentifier.ES256)),
+                null, null,
+                new com.webauthn4j.data.AuthenticatorSelectionCriteria(null,
+                        com.webauthn4j.data.ResidentKeyRequirement.DISCOURAGED,
+                        com.webauthn4j.data.UserVerificationRequirement.PREFERRED),
+                AttestationConveyancePreference.DIRECT, null);
+        var r = platform.create(o).getResponse();
+        return new Registration(r.getAttestationObject(), r.getClientDataJSON(), challenge);
+    }
+
+    /** The built packed attestation as a browser would post it, with fresh client data: its signature is a placeholder. */
+    static Registration forgedPacked(UUID aaguid) {
+        DefaultChallenge challenge = new DefaultChallenge();
+        byte[] cd = new com.webauthn4j.converter.CollectedClientDataConverter(OBJECTS).convertToBytes(
+                new com.webauthn4j.data.client.CollectedClientData(
+                        com.webauthn4j.data.client.ClientDataType.WEBAUTHN_CREATE, challenge, ORIGIN, null));
+        return new Registration(packedBytes(aaguid, aaguid, (byte) (BIT_UP | BIT_UV)), cd, challenge);
+    }
+
     private static StoredAttestation create(com.webauthn4j.test.client.ClientPlatform platform) {
         PublicKeyCredentialCreationOptions o = new PublicKeyCredentialCreationOptions(
                 new PublicKeyCredentialRpEntity("example.com", "example.com"),
@@ -159,13 +205,16 @@ final class Fixtures {
     }
 
     private static StoredAttestation build(UUID aaguid, byte flags, AttestationStatement stmt) {
+        return PasskeyClassifier.parse(buildBytes(aaguid, flags, stmt));
+    }
+
+    private static byte[] buildBytes(UUID aaguid, byte flags, AttestationStatement stmt) {
         KeyPair credential = ecKey();
         AttestedCredentialData acd = new AttestedCredentialData(new AAGUID(aaguid), new byte[] {9, 8, 7, 6},
                 EC2COSEKey.create((ECPublicKey) credential.getPublic(), COSEAlgorithmIdentifier.ES256));
         AuthenticatorData<RegistrationExtensionAuthenticatorOutput> ad =
-                new AuthenticatorData<>(new byte[32], (byte) (flags | BIT_AT), 0, acd);
-        byte[] ao = new AttestationObjectConverter(OBJECTS).convertToBytes(new AttestationObject(ad, stmt));
-        return PasskeyClassifier.parse(ao);
+                new AuthenticatorData<>(RP_ID_HASH, (byte) (flags | BIT_AT), 0, acd);
+        return new AttestationObjectConverter(OBJECTS).convertToBytes(new AttestationObject(ad, stmt));
     }
 
     /**
@@ -173,11 +222,15 @@ final class Fixtures {
      * checks the chain, Keycloak checks signatures at registration).
      */
     static StoredAttestation packed(UUID aaguid, UUID leafAaguid, byte flags) {
+        return PasskeyClassifier.parse(packedBytes(aaguid, leafAaguid, flags));
+    }
+
+    private static byte[] packedBytes(UUID aaguid, UUID leafAaguid, byte flags) {
         KeyPair attestationKey = ecKey();
         List<X509Certificate> cas = new ArrayList<>();
         cas.add(TestAttestationUtil.load3tierTestIntermediateCACertificate());
         AttestationCertificatePath x5c = new AttestationCertificatePath(leaf(attestationKey, leafAaguid), cas);
-        return build(aaguid, flags, new PackedAttestationStatement(COSEAlgorithmIdentifier.ES256, new byte[64], x5c));
+        return buildBytes(aaguid, flags, new PackedAttestationStatement(COSEAlgorithmIdentifier.ES256, new byte[64], x5c));
     }
 
     static StoredAttestation packed(UUID aaguid) {

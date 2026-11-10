@@ -334,9 +334,16 @@ public final class SigninConfig {
             }
             if (!readable) {
                 // Contract §8.1 "Unreadable roots": one entry the JDK can't
-                // read never denies every sign-in. That model's passkeys
-                // count as synced until the list is fixed.
-                LOG.warnf("portcullis: trust-list entry %s left out: a root isn't exactly one DER X.509 certificate", aaguid);
+                // read never denies every sign-in. A revoked entry is kept
+                // without roots (revocation needs none: it still downgrades);
+                // any other is left out, so that model's passkeys count as
+                // synced until the list is fixed.
+                if ("revoked".equals(t.status())) {
+                    LOG.warnf("portcullis: trust-list entry %s (revoked) kept without its roots: a root isn't exactly one DER X.509 certificate", aaguid);
+                    authenticators.put(aaguid, new Trust(t.kind(), t.status(), List.of()));
+                } else {
+                    LOG.warnf("portcullis: trust-list entry %s left out: a root isn't exactly one DER X.509 certificate", aaguid);
+                }
                 continue;
             }
             authenticators.put(aaguid, new Trust(t.kind(), t.status(), roots));

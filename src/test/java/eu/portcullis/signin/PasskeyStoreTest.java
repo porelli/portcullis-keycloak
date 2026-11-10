@@ -79,9 +79,29 @@ class PasskeyStoreTest {
             PasskeyEntity f = store.get(fed).orElseThrow();
             assertNull(f.getX5c());
             assertNull(f.getCappedAt());
+            assertTrue(store.credentialExists(fed));
+            assertTrue(!store.credentialExists(id));
             // The provider-side removal.
             assertTrue(db.<Boolean>tx(em -> new PasskeyStore(em).remove(fed)));
             assertTrue(store.get(fed).isEmpty());
+
+            // A deleted realm's rows and state go with it; another realm's stay.
+            db.sql("INSERT INTO CREDENTIAL (ID) VALUES ('" + id + "')");
+            String other = "44444444-4444-4444-4444-444444444444";
+            db.txRun(em -> {
+                PasskeyStore s = new PasskeyStore(em);
+                s.put(realm, alice, credential(id), a, "security_key", null, 87, at);
+                s.put(otherRealm, alice, credential(other), a, "security_key", null, 87, at);
+                s.setLastSerial(realm, 87);
+                s.setLastSerial(otherRealm, 87);
+            });
+            db.txRun(em -> new PasskeyStore(em).removeRealm("realm-1"));
+            db.em.clear();
+            assertTrue(store.get(id).isEmpty());
+            assertEquals(-1, store.lastSerial(realm));
+            assertTrue(store.get(other).isPresent());
+            assertEquals(87, store.lastSerial(otherRealm));
+            db.txRun(em -> new PasskeyStore(em).selfCheck());
         }
     }
 

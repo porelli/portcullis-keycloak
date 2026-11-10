@@ -150,5 +150,7 @@ class PasskeyClassifierTest {
         assertEquals("security_key", PasskeyClassifier.reclassify("security_key", null, a, missing, NOW), "never down for a missing entry");
         assertEquals("passkey_synced", PasskeyClassifier.reclassify("security_key", null, a, revoked, NOW), "down for revoked");
         assertEquals("passkey_synced", PasskeyClassifier.reclassify("nonsense", null, a, sk, NOW));
+        assertEquals("passkey_synced", PasskeyClassifier.reclassify("passkey_synced", "garbage", a, sk, NOW), "an unknown cap caps at synced");
+        assertEquals("passkey_device", PasskeyClassifier.reclassify("passkey_device", "garbage", a, sk, NOW), "and never lowers");
     }
 }

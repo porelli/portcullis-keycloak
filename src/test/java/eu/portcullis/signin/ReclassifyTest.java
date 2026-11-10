@@ -12,7 +12,8 @@ import eu.portcullis.signin.store.PasskeyStore;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
+import java.util.HashSet;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.keycloak.models.RealmModel;
 
@@ -20,17 +21,21 @@ class ReclassifyTest {
     private static final Instant NOW = Instant.parse("2026-11-10T00:00:00Z");
     private static final String ID = "33333333-3333-3333-3333-333333333333";
 
-    /** Keycloak's credential types, by credential id. */
+    /** Keycloak's credential types, by credential id; ids in {@code failing} fail their lookup. */
     private static final class Types implements Reclassify.CredentialTypes {
         final Map<String, String> types = new HashMap<>();
+        final Set<String> failing = new HashSet<>();
 
         @Override
-        public Optional<String> setType(String userId, String credentialId, String type) {
+        public Reclassify.Outcome setType(String userId, String credentialId, String type) {
+            if (failing.contains(credentialId)) {
+                return new Reclassify.Outcome.Failed("test");
+            }
             if (!types.containsKey(credentialId)) {
-                return Optional.empty();
+                return new Reclassify.Outcome.Gone();
             }
             types.put(credentialId, type);
-            return Optional.of("alice");
+            return new Reclassify.Outcome.Applied("alice");
         }
     }
 
@@ -145,6 +150,38 @@ class ReclassifyTest {
             assertEquals(0, w.run(config(11, false, entry(YUBIKEY, "security_key", "certified", root3()))));
             assertEquals("passkey_synced", w.row().getKind());
             assertTrue(w.types().types.isEmpty());
+            assertEquals(11, new PasskeyStore(db.em).lastSerial(w.realm()), "a confirmed-gone credential doesn't hold the serial back");
+        }
+    }
+
+    @Test
+    void failedLookupLeavesSerialUnapplied() throws Exception {
+        try (TestDb db = new TestDb()) {
+            World w = world(db, Fixtures.packed(YUBIKEY), "passkey_synced", null);
+            SigninConfig verifies = config(11, false, entry(YUBIKEY, "security_key", "certified", root3()));
+            w.types().failing.add(ID);
+            assertEquals(0, w.run(verifies));
+            assertEquals(10, new PasskeyStore(db.em).lastSerial(w.realm()), "serial 11 not applied");
+            assertEquals("passkey_synced", w.row().getKind());
+            assertEquals(10, w.row().getMdsSerial());
+            // The lookup works again: the next run applies 11.
+            w.types().failing.clear();
+            assertEquals(1, w.run(verifies));
+            assertEquals("security_key", w.row().getKind());
+            assertEquals("portcullis-security-key", w.types().types.get(ID));
+            assertEquals(11, new PasskeyStore(db.em).lastSerial(w.realm()));
+        }
+    }
+
+    @Test
+    void rowDecidedAgainstAnOlderSerialIsReclassified() throws Exception {
+        try (TestDb db = new TestDb()) {
+            // A registration that raced a list update: the realm applied 11, the row was decided against 10.
+            World w = world(db, Fixtures.packed(YUBIKEY), "passkey_synced", null);
+            db.txRun(em -> new PasskeyStore(em).setLastSerial(w.realm(), 11));
+            assertEquals(1, w.run(config(11, false, entry(YUBIKEY, "security_key", "certified", root3()))));
+            assertEquals("security_key", w.row().getKind());
+            assertEquals(11, w.row().getMdsSerial());
         }
     }
 
