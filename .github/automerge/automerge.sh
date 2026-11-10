@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Dependabot auto-merge. Run by .github/workflows/dependabot-automerge.yml
 # (workflow_run after the required workflows, or dispatched with a PR number).
-# The same file lives in porelli/portcullis, portcullis-hub,
-# portcullis-templates and portcullis-keycloak; keep the copies identical. Tests: .github/automerge/test.sh.
+# The same file lives in porelli/portcullis, portcullis-hub and
+# portcullis-templates; keep the copies identical. Tests: .github/automerge/test.sh.
 #
 # It never checks out or runs PR code: every fact comes from the GitHub API.
 #

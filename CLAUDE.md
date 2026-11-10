@@ -15,14 +15,13 @@ The Portcullis sign-in extension for Keycloak 26.8.1, published as `ghcr.io/pore
 | `src/test/resources/signin_vectors.json` | Byte copy of portcullis-hub `internal/signin/testdata/vectors.json`; `RuleTest.sharedVectors` runs every case; CI's `vectors` job `cmp`s it with the Hub's same-named branch, else main |
 | `Dockerfile` | `base` (pinned `gradle:<ver>-jdk21@sha256`, `$BUILDPLATFORM`), `build` (`gradle jar`), `test` (`gradle test`), final = pinned Keycloak + the jar |
 | `gradle/verification-metadata.xml` | sha256 of every artifact (Gradle dependency verification, `--dependency-verification strict`) |
-| `.github/workflows/build.yml` | `test` (`docker buildx build --target test .` + the auto-merge tests), `vectors`, `image` (smoke run: `start-dev`, `GET /admin/serverinfo` lists every id of `PROVIDER_IDS`; publish `edge` on main, semver on `v*`, cosign) |
-| `.github/automerge/`, `.github/workflows/dependabot-automerge.yml` | Dependabot auto-merge, the same files as the other repos (keep `automerge.sh` identical) |
+| `.github/workflows/build.yml` | `test` (`docker buildx build --target test .` + the auto-merge tests), `vectors`, `smoke` (contents: read; smoke run: `start-dev`, `GET /admin/serverinfo` lists every id of `PROVIDER_IDS`; the multi-platform build), `publish` (only job with `packages: write` / `id-token: write`; `edge` on main, semver on `v*`, cosign); the test job also checks the Dockerfile's Keycloak tag equals `val keycloak` in `build.gradle.kts` |
+| `.github/automerge/`, `.github/workflows/dependabot-automerge.yml` | Dependabot auto-merge, the same files as the other repos (keep `automerge.sh` byte-identical to the Hub's) |
 
 ## Commands
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH
-./gradlew test jar                                   # local
+./gradlew test jar                                   # local (JDK 21)
 docker build --target test . && docker build .       # what CI runs
 ./gradlew --write-verification-metadata sha256 test jar   # after any dependency change; review the diff
 ```
@@ -32,7 +31,7 @@ docker build --target test . && docker build .       # what CI runs
 - **Contract first.** `integration-contracts.md` §8.1 is the source of truth for `signin-keycloak.json`, the methods, rules, `pc_method`, `pc_fresh` and the provider ids; change it before the code. The rule evaluation must give the Hub's results (`internal/signin`): the shared vectors are the check.
 - **Fail closed.** A missing, unreadable or invalid `signin-keycloak.json` is `DENY_ALL`: nobody signs in. An unknown method, rule shape or file version denies; a method that is off is never accepted.
 - **Secrets** never on argv or in logs (the CI smoke run's admin password comes from the environment and a 0600 file).
-- **Supply chain.** Every image `tag@sha256`; every action pinned by full commit SHA with a `# vX.Y.Z` comment; Gradle wrapper with `distributionSha256Sum`; `verification-metadata.xml` with sha256 for every artifact. Keycloak's own SPI and the libraries it ships (webauthn4j, Jackson, jboss-logging) are `compileOnly`, non-transitive, at exactly the versions Keycloak 26.8.1 ships (keycloak-parent / quarkus-bom); a Keycloak bump moves the base image and these together. Dependabot (gradle, docker, github-actions) doesn't regenerate `verification-metadata.xml`: a Gradle bump needs it regenerated and pushed to the PR.
+- **Supply chain.** Every image `tag@sha256`; every action pinned by full commit SHA with a `# vX.Y.Z` comment; Gradle wrapper with `distributionSha256Sum`; `verification-metadata.xml` with sha256 for every artifact. Keycloak's own SPI and the libraries it ships (webauthn4j, Jackson, jboss-logging) are `compileOnly`, non-transitive, at exactly the versions Keycloak 26.8.1 ships (keycloak-parent / quarkus-bom); a Keycloak bump moves the base image and these together, by hand (CI fails when the Dockerfile's Keycloak tag and `val keycloak` differ; Dependabot ignores these artifacts, the JUnit BOM and Keycloak minor/major image updates). Dependabot (gradle, docker, github-actions) doesn't regenerate `verification-metadata.xml`: a Gradle bump needs it regenerated and pushed to the PR.
 - **Prefer mature libraries**: Keycloak's SPI, webauthn4j (attestation parsing, cert-path validation), Jackson, the JDK's `CertificateFactory`; no hand-rolled X.509 or CBOR code.
 - **No migration code**: there are no installs to upgrade from.
 - **Provider ids** (plan D5, contract §8.1): `webauthn-register-passwordless` (overrides the stock required action), `portcullis-security-key`, `portcullis-device-passkey`, `portcullis-passkey-store`, `portcullis-reclassify`, `portcullis-passkey`, `portcullis-condition-passkey-kind`, `portcullis-method`, `portcullis-password-form`, `portcullis-x509`, `portcullis-fresh`, `auth-cookie` (overrides the stock provider), `portcullis-template`. Add each to `build.yml` `PROVIDER_IDS` when it lands.
