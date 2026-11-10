@@ -10,6 +10,7 @@ import org.keycloak.models.Constants;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.protocol.oidc.utils.AmrUtils;
+import org.keycloak.sessions.AuthenticationSessionModel;
 
 /**
  * The sign-in method table (contract §8.1 "Methods", plan D1), the same in
@@ -35,6 +36,9 @@ public final class Methods {
 
     /** Methods that can't be switched on yet: off whatever the file says. */
     static final Set<String> UNAVAILABLE = Set.of("browser_cert");
+
+    /** The three passkey kinds, weakest first. */
+    public static final List<String> PASSKEY_KINDS = List.of("passkey_synced", "passkey_device", "security_key");
 
     /** Whether id is one of the six method ids. */
     public static boolean known(String id) {
@@ -62,6 +66,16 @@ public final class Methods {
         return Optional.empty();
     }
 
+    /** The amr value of method m (the reference value its execution carries). */
+    public static String amrOf(String m) {
+        for (Info i : TABLE) {
+            if (i.id().equals(m)) {
+                return i.amr();
+            }
+        }
+        throw new IllegalArgumentException("not a sign-in method");
+    }
+
     /** The strength of method m in tenths (10, 25, 25, 30, 35, 40). */
     public static int tenths(String m) {
         for (Info i : TABLE) {
@@ -81,18 +95,50 @@ public final class Methods {
      * that can't be read counts as nothing.
      */
     public static Set<String> ofSession(RealmModel r, UserSessionModel u) {
+        return ofSession(r, u, SigninConfig.current());
+    }
+
+    /** {@link #ofSession(RealmModel, UserSessionModel)} against a given file. */
+    public static Set<String> ofSession(RealmModel r, UserSessionModel u, SigninConfig cfg) {
+        return r == null || u == null ? new LinkedHashSet<>() : ofExecutions(r, u.getNote(Constants.AUTHENTICATORS_COMPLETED), cfg);
+    }
+
+    /**
+     * The methods of the authentication in progress: the executions it has
+     * completed so far, within their max age, as the authentication session
+     * keeps them for its user session (Keycloak merges an SSO session's own
+     * completed executions in when {@code auth-cookie} reuses it), mapped
+     * like {@link #ofSession}. A forced re-authentication counts only what it
+     * completed itself.
+     */
+    public static Set<String> ofAuthentication(RealmModel r, AuthenticationSessionModel a, SigninConfig cfg) {
+        return r == null || a == null ? new LinkedHashSet<>() : ofExecutions(r, a.getUserSessionNotes().get(Constants.AUTHENTICATORS_COMPLETED), cfg);
+    }
+
+    private static Set<String> ofExecutions(RealmModel r, String note, SigninConfig cfg) {
         Set<String> out = new LinkedHashSet<>();
-        if (r == null || u == null) {
+        if (cfg == null) {
             return out;
         }
-        Map<String, Integer> executions = AuthenticatorUtils.parseCompletedExecutions(u.getNote(Constants.AUTHENTICATORS_COMPLETED));
+        Map<String, Integer> executions;
+        try {
+            executions = AuthenticatorUtils.parseCompletedExecutions(note);
+        } catch (RuntimeException e) {
+            return out; // unreadable counts as nothing
+        }
         if (executions == null || executions.isEmpty()) {
             return out;
         }
-        SigninConfig cfg = SigninConfig.current();
         for (String amr : AmrUtils.getAuthenticationExecutionReferences(executions, r)) {
             forAmr(amr).filter(cfg::on).ifPresent(out::add);
         }
-        return out;
+        // Canonical order (weakest first), whatever the executions' order.
+        Set<String> sorted = new LinkedHashSet<>();
+        for (String m : IDS) {
+            if (out.contains(m)) {
+                sorted.add(m);
+            }
+        }
+        return sorted;
     }
 }

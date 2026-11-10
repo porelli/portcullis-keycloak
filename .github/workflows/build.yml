@@ -122,7 +122,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: "webauthn-register-passwordless portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify"
+      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -192,6 +192,11 @@ jobs:
             order=$(jq -r --arg id "$id" '.providers["required-action"].providers[$id].order // 0' "$work/serverinfo.json")
             if [ "$marker" = passkey-kinds ] && [ "$order" = 1 ]; then echo "ok  $id is the Portcullis override"; else echo "::error::required action $id isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
           done
+          marker=$(jq -r '.providers["authenticator"].providers["auth-cookie"].operationalInfo.portcullis // ""' "$work/serverinfo.json")
+          order=$(jq -r '.providers["authenticator"].providers["auth-cookie"].order // 0' "$work/serverinfo.json")
+          if [ "$marker" = pc-method ] && [ "$order" = 1 ]; then echo "ok  auth-cookie is the Portcullis override"; else echo "::error::authenticator auth-cookie isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
+          # portcullis-fresh is a protocol mapper (Keycloak lists it under protocol-mapper).
+          if jq -e '.providers["protocol-mapper"].providers["portcullis-fresh"]' "$work/serverinfo.json" >/dev/null; then echo "ok  portcullis-fresh is a protocol mapper"; else echo "::error::portcullis-fresh isn't listed as a protocol mapper"; missing=1; fi
           if docker logs kc-smoke 2>&1 | grep -iE 'portcullis.*(ERROR|Exception)|(ERROR|Exception).*portcullis'; then
             echo "::error::Keycloak logged an error naming portcullis"
             missing=1

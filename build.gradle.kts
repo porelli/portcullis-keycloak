@@ -27,6 +27,8 @@ val jakartaRs = "3.1.0"           // quarkus-bom 3.40.1
 val hibernate = "7.4.9.Final"     // quarkus-bom 3.40.1
 val liquibase = "4.33.0"          // quarkus-bom 3.40.1
 val h2 = "2.4.240"                // quarkus-bom 3.40.1
+// Test-only: the needs-stronger page rendered as Keycloak renders it.
+val freemarker = "2.3.35"         // keycloak-parent 26.8.1 freemarker.version
 
 dependencies {
     for (a in listOf(
@@ -59,6 +61,10 @@ dependencies {
     testImplementation("org.hibernate.orm:hibernate-core:$hibernate")
     testImplementation("org.liquibase:liquibase-core:$liquibase")
     testRuntimeOnly("com.h2database:h2:$h2")
+    testImplementation("org.freemarker:freemarker:$freemarker")
+    // Keycloak's JsonSerialization (credential data, completed executions) registers these.
+    testRuntimeOnly("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:$jackson")
+    testRuntimeOnly("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:$jackson")
 }
 
 // The tests also see what the extension compiles against (Keycloak's SPI, as
@@ -68,7 +74,10 @@ configurations.testImplementation { extendsFrom(configurations.compileOnly.get()
 tasks.withType<JavaCompile>().configureEach {
     options.release = 21
     options.encoding = "UTF-8"
-    options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+    // -classfile: Keycloak's ComponentModel (reached through the authenticator
+    // and mapper SPI) carries Infinispan protostream annotations, which aren't
+    // on the compile classpath; javac can only warn that it can't read them.
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-classfile", "-Werror"))
 }
 
 tasks.jar {

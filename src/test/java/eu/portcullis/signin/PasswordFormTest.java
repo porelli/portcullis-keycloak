@@ -1,0 +1,92 @@
+package eu.portcullis.signin;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
+import org.keycloak.authentication.AuthenticationFlowError;
+import org.keycloak.authentication.FlowStatus;
+import org.keycloak.authentication.authenticators.browser.AbstractUsernameFormAuthenticator;
+import org.keycloak.events.Errors;
+
+class PasswordFormTest {
+    private static final SigninConfig ON = Configs.of(Configs.WITH_PASSWORD, false, "", "");
+    private static final String RIGHT = "correct horse battery staple";
+
+    @Test
+    void skippedWhenOffOrOtherMethodRequested() {
+        Flow off = new Flow();
+        new PasswordForm(Configs::plain).authenticate(off.context); // password off
+        assertEquals(FlowStatus.ATTEMPTED, off.status);
+        assertNull(off.page);
+
+        Flow other = new Flow();
+        other.clientNotes.put(PcMethod.CLIENT_NOTE, "security_key");
+        new PasswordForm(() -> ON).authenticate(other.context);
+        assertEquals(FlowStatus.ATTEMPTED, other.status);
+
+        Flow passkey = new Flow();
+        passkey.clientNotes.put(PcMethod.CLIENT_NOTE, "passkey");
+        new PasswordForm(() -> ON).authenticate(passkey.context);
+        assertEquals(FlowStatus.ATTEMPTED, passkey.status);
+
+        Flow asked = new Flow();
+        asked.clientNotes.put(PcMethod.CLIENT_NOTE, "password");
+        new PasswordForm(() -> ON).authenticate(asked.context);
+        assertEquals(FlowStatus.CHALLENGE, asked.status);
+        assertEquals("login", asked.page);
+
+        Flow posted = new Flow(); // a form posted after password was switched off
+        posted.person("u-alice", "alice").password = RIGHT;
+        posted.form.putSingle("username", "alice");
+        posted.form.putSingle("password", RIGHT);
+        new PasswordForm(Configs::plain).action(posted.context);
+        assertEquals(FlowStatus.FAILED, posted.status);
+        assertEquals(AuthenticationFlowError.ACCESS_DENIED, posted.error);
+    }
+
+    private static Flow login(String typed) {
+        Flow f = new Flow();
+        f.person("u-admin", "admin").password = RIGHT;
+        f.person("u-hub", "portcullis-hub").password = RIGHT;
+        f.person("u-alice", "alice").password = RIGHT;
+        f.emails.put("root@example.com", f.users.get("admin"));
+        f.form.putSingle("username", typed);
+        f.form.putSingle("password", RIGHT);
+        new PasswordForm(() -> ON).action(f.context);
+        return f;
+    }
+
+    @Test
+    void refusesAdminAndHubAccount() {
+        for (String typed : new String[] {"admin", "Admin", " ADMIN ", "portcullis-hub", "Portcullis-Hub", "root@example.com"}) {
+            Flow f = login(typed);
+            assertEquals(FlowStatus.FAILURE_CHALLENGE, f.status, typed);
+            // Counted like a wrong password: Keycloak's processor passes a failure
+            // to brute-force protection for the account it finds (the set user or
+            // the attempted username).
+            assertEquals(AuthenticationFlowError.INVALID_CREDENTIALS, f.error, typed);
+            assertEquals(typed.trim(), f.authNotes.get(AbstractUsernameFormAuthenticator.ATTEMPTED_USERNAME), typed);
+            assertEquals(java.util.List.of(Errors.INVALID_USER_CREDENTIALS), f.eventErrors, typed);
+            assertEquals(java.util.List.of(PasswordForm.REFUSED), f.formErrorsOrFieldErrors(), typed);
+            assertNull(f.user, typed);
+            for (Flow.Person p : f.people()) {
+                assertTrue(p.checked.isEmpty(), typed + ": the password is never checked");
+            }
+        }
+        Flow alice = login("alice");
+        assertEquals(FlowStatus.SUCCESS, alice.status);
+        assertSame(alice.users.get("alice"), alice.user);
+    }
+
+    @Test
+    void refusesAKnownAdminWithoutAForm() {
+        Flow f = new Flow();
+        f.user = f.person("u-admin", "admin").model; // e.g. a step-up that asked for a password
+        f.clientNotes.put(PcMethod.CLIENT_NOTE, "password");
+        new PasswordForm(() -> ON).authenticate(f.context);
+        assertEquals(FlowStatus.ATTEMPTED, f.status);
+    }
+}
