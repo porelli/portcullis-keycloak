@@ -4,8 +4,12 @@
 # issue.
 #
 # Keycloak: the base image (docker) and the org.keycloak / webauthn4j /
-# jackson / jboss-logging artifacts (gradle) must stay at the versions that
-# Keycloak release ships; bump them together (CLAUDE.md "Supply chain").
+# jackson / jboss-logging artifacts and the JUnit BOM (gradle) stay at the
+# versions that Keycloak release ships, so they move by hand, together with
+# the base image (CLAUDE.md "Supply chain"; build.yml checks the Dockerfile's
+# Keycloak tag equals build.gradle.kts `val keycloak`). Dependabot ignores
+# them, and Keycloak image minor / major updates (patches and digests still
+# come).
 # A Gradle bump also needs gradle/verification-metadata.xml regenerated, which
 # Dependabot doesn't do: its CI fails strict verification until someone
 # pushes the regenerated file to the PR branch (then it's merged by hand).
@@ -18,6 +22,12 @@ updates:
     groups:
       gradle:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "org.keycloak:*"
+      - dependency-name: "com.webauthn4j:*"
+      - dependency-name: "com.fasterxml.jackson*"
+      - dependency-name: "org.jboss.logging:*"
+      - dependency-name: "org.junit:junit-bom"
 
   - package-ecosystem: docker
     directory: /
@@ -26,6 +36,13 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+    ignore:
+      # Dependabot names a non-Docker-Hub image without its registry; both
+      # spellings listed.
+      - dependency-name: "keycloak/keycloak"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "quay.io/keycloak/keycloak"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
