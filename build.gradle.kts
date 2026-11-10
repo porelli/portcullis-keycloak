@@ -20,6 +20,13 @@ val jackson = "2.21.7"            // quarkus-bom 3.40.1
 val jacksonAnnotations = "2.21"   // quarkus-bom 3.40.1
 val jbossLogging = "3.6.3.Final"  // quarkus-bom 3.40.1
 val junit = "6.1.3"               // quarkus-bom 3.40.1
+val jakartaPersistence = "3.2.0"  // quarkus-bom 3.40.1
+val jakartaRs = "3.1.0"           // quarkus-bom 3.40.1
+// Test-only: the store tests run the Liquibase changelog on an in-memory H2
+// and map the entities with Hibernate, at the versions Keycloak 26.8.1 runs.
+val hibernate = "7.4.9.Final"     // quarkus-bom 3.40.1
+val liquibase = "4.33.0"          // quarkus-bom 3.40.1
+val h2 = "2.4.240"                // quarkus-bom 3.40.1
 
 dependencies {
     for (a in listOf(
@@ -27,6 +34,7 @@ dependencies {
         "keycloak-server-spi-private",
         "keycloak-services",
         "keycloak-model-jpa",
+        "keycloak-model-storage-private",
         "keycloak-core",
         "keycloak-common",
     )) {
@@ -37,14 +45,25 @@ dependencies {
     compileOnly("com.fasterxml.jackson.core:jackson-core:$jackson") { isTransitive = false }
     compileOnly("com.fasterxml.jackson.core:jackson-annotations:$jacksonAnnotations") { isTransitive = false }
     compileOnly("org.jboss.logging:jboss-logging:$jbossLogging") { isTransitive = false }
+    compileOnly("jakarta.persistence:jakarta.persistence-api:$jakartaPersistence") { isTransitive = false }
+    compileOnly("jakarta.ws.rs:jakarta.ws.rs-api:$jakartaRs") { isTransitive = false }
 
     testImplementation(platform("org.junit:junit-bom:$junit"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("com.fasterxml.jackson.core:jackson-databind:$jackson")
     testImplementation("com.webauthn4j:webauthn4j-test:$webauthn4j")
+    // The test attestation leaves' AAGUID extension (the version webauthn4j-test brings).
+    testImplementation("org.bouncycastle:bcprov-jdk15to18:1.83")
     testRuntimeOnly("org.jboss.logging:jboss-logging:$jbossLogging")
+    testImplementation("org.hibernate.orm:hibernate-core:$hibernate")
+    testImplementation("org.liquibase:liquibase-core:$liquibase")
+    testRuntimeOnly("com.h2database:h2:$h2")
 }
+
+// The tests also see what the extension compiles against (Keycloak's SPI, as
+// Keycloak ships it).
+configurations.testImplementation { extendsFrom(configurations.compileOnly.get()) }
 
 tasks.withType<JavaCompile>().configureEach {
     options.release = 21
@@ -59,6 +78,8 @@ tasks.jar {
 
 tasks.test {
     useJUnitPlatform()
+    // Liquibase's anonymous usage reporting: never from a build.
+    systemProperty("liquibase.analytics.enabled", "false")
     testLogging {
         events("passed", "skipped", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

@@ -323,8 +323,21 @@ public final class SigninConfig {
                 throw new IllegalArgumentException("authenticators: an entry without roots");
             }
             List<X509Certificate> roots = new ArrayList<>(t.roots().size());
+            boolean readable = true;
             for (String b64 : t.roots()) {
-                roots.add(certificate(x509, b64));
+                Optional<X509Certificate> c = certificate(x509, b64);
+                if (c.isEmpty()) {
+                    readable = false;
+                    break;
+                }
+                roots.add(c.get());
+            }
+            if (!readable) {
+                // Contract §8.1 "Unreadable roots": one entry the JDK can't
+                // read never denies every sign-in. That model's passkeys
+                // count as synced until the list is fixed.
+                LOG.warnf("portcullis: trust-list entry %s left out: a root isn't exactly one DER X.509 certificate", aaguid);
+                continue;
             }
             authenticators.put(aaguid, new Trust(t.kind(), t.status(), roots));
         }
@@ -344,7 +357,11 @@ public final class SigninConfig {
                 Map.copyOf(templates), Map.copyOf(clients), Map.copyOf(authenticators), f.mds().serial(), next);
     }
 
-    private static X509Certificate certificate(CertificateFactory x509, String b64) {
+    /**
+     * A root: standard base64 (else the whole file is refused) of exactly one
+     * DER certificate (else empty: the caller leaves that entry out).
+     */
+    private static Optional<X509Certificate> certificate(CertificateFactory x509, String b64) {
         if (b64 == null) {
             throw new IllegalArgumentException("authenticators: a null root");
         }
@@ -356,13 +373,13 @@ public final class SigninConfig {
         }
         try {
             Certificate c = x509.generateCertificate(new ByteArrayInputStream(der));
-            if (!(c instanceof X509Certificate x) || !Arrays.equals(x.getEncoded(), der)) {
-                throw new IllegalArgumentException("authenticators: a root that isn't exactly one DER certificate");
+            if (c instanceof X509Certificate x && Arrays.equals(x.getEncoded(), der)) {
+                return Optional.of(x);
             }
-            return x;
-        } catch (CertificateException e) {
-            throw new IllegalArgumentException("authenticators: a root that isn't a certificate");
+        } catch (CertificateException | RuntimeException e) {
+            // not a certificate the JDK reads: the entry is left out
         }
+        return Optional.empty();
     }
 
     private static boolean hasControl(String s) {

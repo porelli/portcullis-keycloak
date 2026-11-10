@@ -117,6 +117,39 @@ class SigninConfigTest {
         assertTrue(e.templateForClient("x").isEmpty());
     }
 
+    /**
+     * Contract §8.1 "Unreadable roots" (Task 10 ruling): a root that is
+     * standard base64 but not exactly one DER certificate the JDK reads drops
+     * only its own entry; the rest of the file still loads.
+     */
+    private static String withTrailingByte(String b64) {
+        byte[] der = Base64.getDecoder().decode(b64);
+        byte[] more = java.util.Arrays.copyOf(der, der.length + 1);
+        return Base64.getEncoder().encodeToString(more);
+    }
+
+    @Test
+    void unreadableRootDropsOnlyThatEntry() throws Exception {
+        String other = "ee882879-721c-4913-9775-3dfcce97072a";
+        String two = valid().replace(
+                "\"authenticators\": {",
+                "\"authenticators\": {\n    \"" + other + "\": {\"kind\": \"passkey_device\", \"status\": \"certified\", \"roots\": [\"%s\"]},"
+                        .formatted(root()));
+        for (String bad : new String[] {
+            "AAAA",                                                    // base64, not a certificate
+            withTrailingByte(root()),                                   // a certificate plus a byte
+        }) {
+            String body = two.replace("\"roots\": [\"" + root() + "\"]}\n  },", "\"roots\": [\"" + root() + "\", \"" + bad + "\"]}\n  },");
+            assertNotEquals(two, body, "the mutation applies");
+            SigninConfig c = SigninConfig.parse(body.getBytes(StandardCharsets.UTF_8));
+            assertNotSame(SigninConfig.DENY_ALL, c);
+            assertTrue(c.on("security_key"));
+            assertEquals(87, c.mdsSerial());
+            assertTrue(c.authenticator(UUID.fromString(AAGUID)).isEmpty(), "the entry with the bad root is left out");
+            assertEquals("passkey_device", c.authenticator(UUID.fromString(other)).orElseThrow().kind(), "the other entry stays");
+        }
+    }
+
     @Test
     void invalidOrMissingFileIsDenyAll(@TempDir Path dir) throws Exception {
         String ok = valid();
@@ -159,7 +192,6 @@ class SigninConfigTest {
             {"an unknown status", ok.replace("\"status\": \"certified\"", "\"status\": \"FIDO_CERTIFIED\"")},
             {"no roots", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": []")},
             {"a root that isn't base64", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": [\"%%%\"]")},
-            {"a root that isn't a certificate", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": [\"AAAA\"]")},
             {"a null root", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": [null]")},
             {"a negative serial", ok.replace("\"serial\": 87", "\"serial\": -1")},
             {"a serial as a string", ok.replace("\"serial\": 87", "\"serial\": \"87\"")},

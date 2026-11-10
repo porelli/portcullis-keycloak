@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Portcullis sign-in extension's tables (contract §8.1 portcullis-passkey-store,
+  plan D5). Keycloak runs this changelog through the JpaEntityProvider
+  portcullis-passkey-store. No migration changesets: there are no installs to
+  upgrade from.
+-->
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.1.xsd">
+
+    <changeSet author="portcullis" id="portcullis-passkey-1">
+        <!-- One stored passkey: its attestation for the credential's whole life and its current kind. -->
+        <createTable tableName="PORTCULLIS_PASSKEY">
+            <column name="CREDENTIAL_ID" type="VARCHAR(36)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_PASSKEY"/>
+            </column>
+            <column name="REALM_ID" type="VARCHAR(36)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="USER_ID" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="AAGUID" type="VARCHAR(36)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="ATT_FMT" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <!-- base64url CBOR -->
+            <column name="ATT_STMT" type="CLOB">
+                <constraints nullable="false"/>
+            </column>
+            <!-- base64url -->
+            <column name="AUTHENTICATOR_DATA" type="CLOB">
+                <constraints nullable="false"/>
+            </column>
+            <!-- standard base64 DER, comma separated, leaf first; null without a chain -->
+            <column name="X5C" type="CLOB"/>
+            <column name="BACKUP_ELIGIBLE" type="BOOLEAN">
+                <constraints nullable="false"/>
+            </column>
+            <column name="KIND" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <!-- the add-stronger cap recorded at registration; null = none -->
+            <column name="CAPPED_AT" type="VARCHAR(32)"/>
+            <column name="MDS_SERIAL" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+            <!-- epoch milliseconds -->
+            <column name="CLASSIFIED_AT" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex tableName="PORTCULLIS_PASSKEY" indexName="IDX_PORTCULLIS_PASSKEY_REALM">
+            <column name="REALM_ID"/>
+        </createIndex>
+
+        <!-- Per realm, the last mds.serial reclassification applied. -->
+        <createTable tableName="PORTCULLIS_SIGNIN_STATE">
+            <column name="REALM_ID" type="VARCHAR(36)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_SIGNIN_STATE"/>
+            </column>
+            <column name="LAST_MDS_SERIAL" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+</databaseChangeLog>

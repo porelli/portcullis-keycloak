@@ -122,7 +122,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: ""
+      PROVIDER_IDS: "webauthn-register-passwordless portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
