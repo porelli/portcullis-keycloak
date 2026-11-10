@@ -157,17 +157,33 @@ class ReclassifyTest {
     @Test
     void failedLookupLeavesSerialUnapplied() throws Exception {
         try (TestDb db = new TestDb()) {
+            // Row ID (YUBIKEY, synced) will fail its lookup; row REVOKED (OTHER, security key) gets revoked.
             World w = world(db, Fixtures.packed(YUBIKEY), "passkey_synced", null);
-            SigninConfig verifies = config(11, false, entry(YUBIKEY, "security_key", "certified", root3()));
+            String revokedId = "55555555-5555-5555-5555-555555555555";
+            w.types().types.put(revokedId, "portcullis-security-key");
+            db.txRun(em -> new PasskeyStore(em).put(w.realm(), TestDb.user("user-2", "bob"), PasskeyStoreTest.credential(revokedId),
+                    Fixtures.packed(Fixtures.OTHER), "security_key", null, 10, NOW));
+            SigninConfig next = config(11, false,
+                    entry(YUBIKEY, "security_key", "certified", root3()),
+                    entry(Fixtures.OTHER, "security_key", "revoked", root3()));
             w.types().failing.add(ID);
-            assertEquals(0, w.run(verifies));
-            assertEquals(10, new PasskeyStore(db.em).lastSerial(w.realm()), "serial 11 not applied");
+
+            // (a) the failed row is skipped, the revoked one is downgraded in the same pass.
+            assertEquals(1, w.run(next));
             assertEquals("passkey_synced", w.row().getKind());
-            assertEquals(10, w.row().getMdsSerial());
-            // The lookup works again: the next run applies 11.
+            assertEquals(10, w.row().getMdsSerial(), "the failed row keeps its serial");
+            db.em.clear();
+            PasskeyEntity revoked = new PasskeyStore(db.em).get(revokedId).orElseThrow();
+            assertEquals("passkey_synced", revoked.getKind());
+            assertEquals(11, revoked.getMdsSerial());
+            assertEquals("webauthn-passwordless", w.types().types.get(revokedId));
+            assertEquals(10, new PasskeyStore(db.em).lastSerial(w.realm()), "serial 11 held back");
+
+            // (b) the lookup works again: the next run applies the failed row and the serial.
             w.types().failing.clear();
-            assertEquals(1, w.run(verifies));
+            assertEquals(1, w.run(next));
             assertEquals("security_key", w.row().getKind());
+            assertEquals(11, w.row().getMdsSerial());
             assertEquals("portcullis-security-key", w.types().types.get(ID));
             assertEquals(11, new PasskeyStore(db.em).lastSerial(w.realm()));
         }

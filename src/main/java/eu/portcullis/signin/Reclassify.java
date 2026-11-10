@@ -112,9 +112,11 @@ public final class Reclassify implements ScheduledTask {
      * One realm's pass. With {@code mds.serial} above the last applied one,
      * every row is classified again; otherwise only rows decided against an
      * older serial (a registration racing a list update). Nothing is touched
-     * with {@link SigninConfig#DENY_ALL} (serial -1). The realm's serial
-     * advances only when every change was applied: a failed lookup stops the
-     * pass, and the next run tries again. Returns how many kinds changed.
+     * with {@link SigninConfig#DENY_ALL} (serial -1). A row whose credential
+     * lookup fails is skipped (its serial stays, so the next run retries it);
+     * every other row — revocation downgrades included — is still applied in
+     * the same pass. The realm's serial advances only when no row failed.
+     * Returns how many kinds changed.
      */
     static int apply(PasskeyStore store, RealmModel realm, SigninConfig cfg, CredentialTypes types, Instant now) {
         long serial = cfg.mdsSerial();
@@ -123,6 +125,7 @@ public final class Reclassify implements ScheduledTask {
         }
         boolean newer = serial > store.lastSerial(realm);
         int changed = 0;
+        boolean failed = false;
         for (PasskeyEntity e : (Iterable<PasskeyEntity>) store.all(realm)::iterator) {
             if (!newer && e.getMdsSerial() >= serial) {
                 continue;
@@ -139,9 +142,10 @@ public final class Reclassify implements ScheduledTask {
                     continue; // the orphan sweep removes the row
                 }
                 if (o instanceof Outcome.Failed f) {
-                    LOG.warnf("portcullis: reclassification in realm %s stopped at AAGUID %s (%s); mds.serial %d not applied, retried next run",
+                    LOG.warnf("portcullis: reclassification in realm %s skipped a passkey of AAGUID %s (%s); retried next run, mds.serial %d held back",
                             realm.getName(), e.getAaguid(), f.why(), serial);
-                    return changed;
+                    failed = true;
+                    continue; // its serial stays: retried next run
                 }
                 LOG.infof("portcullis: PasskeyReclassified user %s AAGUID %s %s -> %s (mds.serial %d)",
                         ((Outcome.Applied) o).username(), e.getAaguid(), e.getKind(), next, serial);
@@ -149,7 +153,7 @@ public final class Reclassify implements ScheduledTask {
             }
             store.setKind(e, next, serial);
         }
-        if (newer) {
+        if (newer && !failed) {
             store.setLastSerial(realm, serial);
         }
         return changed;
