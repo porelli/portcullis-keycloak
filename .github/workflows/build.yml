@@ -113,6 +113,44 @@ jobs:
           fi
           echo "vectors match portcullis-hub $ref" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # src/test/resources/smoke-realm.json follows core's realm-export.json
+      # (the flows, their configs, the browser flow binding, the required
+      # actions, the passwordless WebAuthn policy) on the same-named core
+      # branch when it exists, else main; a ref without the file passes with
+      # a notice.
+      - name: Compare the smoke realm with core's flows
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          url="https://github.com/porelli/portcullis"
+          ref=main
+          if [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$REF" != main ]; then
+            rc=0
+            git ls-remote --exit-code --heads "$url" "$REF" >/dev/null || rc=$?
+            case "$rc" in
+              0) ref="$REF" ;;
+              2) ;;
+              *) echo "::error::git ls-remote $url $REF failed (exit $rc)"; exit 1 ;;
+            esac
+          fi
+          core="$RUNNER_TEMP/realm-export.json"
+          code=$(curl -sS -o "$core" -w '%{http_code}' "https://raw.githubusercontent.com/porelli/portcullis/$ref/keycloak/realm-export.json")
+          case "$code" in
+            200) ;;
+            404) echo "::notice::portcullis $ref has no keycloak/realm-export.json: nothing to compare"; exit 0 ;;
+            *) echo "::error::fetching core's realm-export from $ref: HTTP $code"; exit 1 ;;
+          esac
+          keys='{authenticationFlows, authenticatorConfig, browserFlow, requiredActions, bruteForceProtected, failureFactor} + (with_entries(select(.key | startswith("webAuthnPolicyPasswordless"))))'
+          if ! jq -e '.authenticationFlows | map(.alias) | index("portcullis-signin")' "$core" >/dev/null; then
+            echo "::notice::portcullis $ref's realm has no portcullis-signin flow yet: nothing to compare"
+            exit 0
+          fi
+          if ! diff <(jq -S "$keys" "$core") <(jq -S "$keys" src/test/resources/smoke-realm.json); then
+            echo "::error::src/test/resources/smoke-realm.json doesn't follow portcullis $ref keycloak/realm-export.json (flows, configs, required actions, passwordless policy): copy them"
+            exit 1
+          fi
+          echo "smoke realm follows portcullis $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Build, smoke run and the multi-platform build: no write permission.
   smoke:
     needs: [test, vectors]
@@ -204,6 +242,25 @@ jobs:
           docker rm -f kc-smoke >/dev/null
           rm -rf "$work"
           exit "$missing"
+
+      # A live sign-in on a realm built from core's flow tree
+      # (src/test/resources/smoke-realm.json; the vectors job checks it
+      # against core's realm-export): password on and off, the passkey
+      # sign-in page first, a real discoverable assertion through a CDP
+      # virtual authenticator, pc_method=password, and the debug log never
+      # invoking the password form while password is off.
+      - name: Install Playwright (pinned)
+        run: |
+          python3 -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install --quiet -r .github/smoke/requirements.txt
+          sudo /tmp/smoke-venv/bin/playwright install-deps chromium
+          /tmp/smoke-venv/bin/playwright install chromium
+
+      - name: Live sign-in smoke run (core's flow tree, virtual authenticator)
+        env:
+          IMAGE: portcullis-keycloak:smoke
+          PYTHON: /tmp/smoke-venv/bin/python
+        run: bash .github/smoke/run.sh
 
       # Both platforms, never pushed: every run checks the arm64 image
       # builds. Main's publishing runs write the layer cache (mode=max:

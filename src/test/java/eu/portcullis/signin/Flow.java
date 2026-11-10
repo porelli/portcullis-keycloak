@@ -73,6 +73,7 @@ final class Flow {
     final List<String> formErrors = new ArrayList<>();
 
     UserModel user;
+    List<org.keycloak.authentication.AuthenticationSelectionOption> selections;
     FlowStatus status;
     AuthenticationFlowError error;
     String page;
@@ -239,6 +240,14 @@ final class Flow {
                 .on("resetFlow", a -> {
                     status = FlowStatus.FLOW_RESET;
                     resetListener = a.length > 0 ? (Runnable) a[0] : null;
+                    return null;
+                })
+                .on("getAuthenticationSelections", a -> selections)
+                .on("setAuthenticationSelections", a -> {
+                    @SuppressWarnings("unchecked")
+                    List<org.keycloak.authentication.AuthenticationSelectionOption> l =
+                            (List<org.keycloak.authentication.AuthenticationSelectionOption>) a[0];
+                    selections = l;
                     return null;
                 })
                 .on("getStatus", a -> status)

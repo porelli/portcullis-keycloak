@@ -68,6 +68,7 @@ public class PasswordForm extends UsernamePasswordForm {
             context.attempted();
             return;
         }
+        Offer.usableOnly(context, config.get());
         super.authenticate(context);
     }
 

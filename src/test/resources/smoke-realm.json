@@ -1,0 +1,511 @@
+{
+  "realm": "portcullis",
+  "displayName": "Portcullis",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 43200,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 7776000,
+  "revokeRefreshToken": false,
+  "refreshTokenMaxReuse": 0,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 300,
+  "webAuthnPolicyRpEntityName": "Portcullis",
+  "webAuthnPolicySignatureAlgorithms": [
+    "ES256"
+  ],
+  "webAuthnPolicyRpId": "",
+  "webAuthnPolicyAttestationConveyancePreference": "none",
+  "webAuthnPolicyAuthenticatorAttachment": "cross-platform",
+  "webAuthnPolicyRequireResidentKey": "No",
+  "webAuthnPolicyUserVerificationRequirement": "preferred",
+  "webAuthnPolicyCreateTimeout": 60,
+  "webAuthnPolicyAvoidSameAuthenticatorRegister": true,
+  "webAuthnPolicyPasswordlessRpEntityName": "Portcullis",
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": [
+    "ES256"
+  ],
+  "webAuthnPolicyPasswordlessRpId": "",
+  "webAuthnPolicyPasswordlessAttestationConveyancePreference": "direct",
+  "webAuthnPolicyPasswordlessAuthenticatorAttachment": "not specified",
+  "webAuthnPolicyPasswordlessRequireResidentKey": "Yes",
+  "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "webAuthnPolicyPasswordlessCreateTimeout": 60,
+  "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": true,
+  "attributes": {
+    "acr.loa.map": "{}"
+  },
+  "authenticationFlows": [
+    {
+      "alias": "portcullis-universal",
+      "description": "Sign-in methods (contract §8.1): the SSO cookie, the invite identity provider (only with kc_idp_hint) or a sign-in method, then the app's sign-in template",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorFlow": true,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "flowAlias": "portcullis-authenticate"
+        },
+        {
+          "authenticator": "portcullis-template",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-authenticate",
+      "description": "SSO cookie (unless pc_method asks for a method the session lacks), the invite identity provider, or a sign-in method",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10
+        },
+        {
+          "authenticator": "identity-provider-redirector",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 20
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
+          "flowAlias": "portcullis-signin"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-signin",
+      "description": "YubiKey certificate (automatic when the browser presents one), a passkey, or a password; each only while its method is on",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "portcullis-x509",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "authenticatorConfig": "x509-config"
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "flowAlias": "portcullis-signin-passkey"
+        },
+        {
+          "authenticator": "portcullis-password-form",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
+          "authenticatorConfig": "password-config"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-signin-passkey",
+      "description": "A passkey of a kind that is on; its kind decides the amr (hwk, dpk, spk)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "portcullis-passkey",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "flowAlias": "portcullis-passkey-security-key"
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 30,
+          "flowAlias": "portcullis-passkey-device"
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 40,
+          "flowAlias": "portcullis-passkey-synced"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-passkey-security-key",
+      "description": "The passkey that signed in is a security key: the session gets its amr while the method is on",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "portcullis-condition-passkey-kind",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorConfig": "passkey-kind-security-key"
+        },
+        {
+          "authenticator": "portcullis-method",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorConfig": "method-security-key"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-passkey-device",
+      "description": "The passkey that signed in is a device-bound passkey: the session gets its amr while the method is on",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "portcullis-condition-passkey-kind",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorConfig": "passkey-kind-device"
+        },
+        {
+          "authenticator": "portcullis-method",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorConfig": "method-device"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-passkey-synced",
+      "description": "The passkey that signed in is a synced passkey: the session gets its amr while the method is on",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "portcullis-condition-passkey-kind",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorConfig": "passkey-kind-synced"
+        },
+        {
+          "authenticator": "portcullis-method",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorConfig": "method-synced"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-invite-link",
+      "description": "First login through the invite identity provider: link to the existing (LLDAP) user with that username, never create one",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "idp-detect-existing-broker-user",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10
+        },
+        {
+          "authenticator": "idp-auto-link",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-invite-session",
+      "description": "After an invite login: only clients with the portcullis-invite-client scope (portcullis-forward-auth), any other is denied; then amr inv and the template check",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 10,
+          "flowAlias": "portcullis-invite-client"
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "flowAlias": "portcullis-invite-deny"
+        },
+        {
+          "authenticator": "allow-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "authenticatorConfig": "amr-inv-invite"
+        },
+        {
+          "authenticator": "portcullis-template",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-invite-client",
+      "description": "The client has the portcullis-invite-client scope (only portcullis-forward-auth has it): a missing scope is false",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-client-scope",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorConfig": "invite-client-scope"
+        },
+        {
+          "authenticator": "allow-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-invite-deny",
+      "description": "Deny every invite login portcullis-invite-client did not admit (also when that sub-flow is missing or renamed)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-sub-flow-executed",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorConfig": "invite-client-not-admitted"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorConfig": "invite-client-deny"
+        }
+      ]
+    },
+    {
+      "alias": "portcullis-registration-flow",
+      "description": "Registration flow (registration is disabled)",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "registration-page-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "x509-config",
+      "config": {
+        "x509-cert-auth.canonical-dn-enabled": "false",
+        "x509-cert-auth.serialnumber-hex-enabled": "false",
+        "x509-cert-auth.regular-expression": "(.*?)(?:$)",
+        "x509-cert-auth.mapper-selection": "Username or Email",
+        "x509-cert-auth.mapper-selection.user-attribute-name": "usercertificate",
+        "x509-cert-auth.mapping-source-selection": "Subject's Common Name",
+        "x509-cert-auth.crl-checking-enabled": "true",
+        "x509-cert-auth.crl-relative-path": "http://vault:8200/v1/pki_int/crl##http://vault:8200/v1/pki_int/crl/delta",
+        "x509-cert-auth-crl-abort-if-non-updated": "true",
+        "x509-cert-auth.crldp-checking-enabled": "false",
+        "x509-cert-auth.ocsp-checking-enabled": "false",
+        "x509-cert-auth.ocsp-responder-uri": "",
+        "x509-cert-auth.revalidate-certificate-enabled": "true",
+        "x509-cert-auth.timestamp-validation-enabled": "true",
+        "x509-cert-auth.keyusage": "",
+        "x509-cert-auth.extendedkeyusage": "1.3.6.1.5.5.7.3.2",
+        "x509-cert-auth.confirmation-page-disallowed": "true",
+        "default.reference.value": "mtls",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "password-config",
+      "config": {
+        "default.reference.value": "pwd",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "passkey-kind-security-key",
+      "config": {
+        "kind": "security_key"
+      }
+    },
+    {
+      "alias": "method-security-key",
+      "config": {
+        "method": "security_key",
+        "default.reference.value": "hwk",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "passkey-kind-device",
+      "config": {
+        "kind": "passkey_device"
+      }
+    },
+    {
+      "alias": "method-device",
+      "config": {
+        "method": "passkey_device",
+        "default.reference.value": "dpk",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "passkey-kind-synced",
+      "config": {
+        "kind": "passkey_synced"
+      }
+    },
+    {
+      "alias": "method-synced",
+      "config": {
+        "method": "passkey_synced",
+        "default.reference.value": "spk",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "invite-client-scope",
+      "config": {
+        "client_scope": "portcullis-invite-client",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "invite-client-not-admitted",
+      "config": {
+        "flow_to_check": "portcullis-invite-client",
+        "check_result": "not-executed"
+      }
+    },
+    {
+      "alias": "invite-client-deny",
+      "config": {
+        "denyErrorMessage": "Setup links work only through the Portcullis sign-in page. Open the link again."
+      }
+    },
+    {
+      "alias": "amr-inv-invite",
+      "config": {
+        "default.reference.value": "inv",
+        "default.reference.maxAge": "36000"
+      }
+    }
+  ],
+  "browserFlow": "portcullis-universal",
+  "requiredActions": [
+    {
+      "alias": "webauthn-register",
+      "name": "WebAuthn Register",
+      "providerId": "webauthn-register",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 70
+    },
+    {
+      "alias": "webauthn-register-passwordless",
+      "name": "WebAuthn Register Passwordless",
+      "providerId": "webauthn-register-passwordless",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 80
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "user",
+        "description": "Standard authenticated user"
+      },
+      {
+        "name": "admin",
+        "description": "Administrator"
+      }
+    ]
+  },
+  "defaultRoles": [
+    "user"
+  ],
+  "clients": [
+    {
+      "clientId": "smoke",
+      "name": "smoke",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "http://localhost:18081/*"
+      ],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

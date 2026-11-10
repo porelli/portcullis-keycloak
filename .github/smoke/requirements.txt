@@ -1,0 +1,2 @@
+# Pinned (the same Playwright as core's tests/e2e/requirements.txt): the live sign-in smoke run.
+playwright==1.64.1
