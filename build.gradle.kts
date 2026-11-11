@@ -94,6 +94,8 @@ tasks.test {
     useJUnitPlatform()
     // Liquibase's anonymous usage reporting: never from a build.
     systemProperty("liquibase.analytics.enabled", "false")
+    // jboss-logging through java.util.logging: the tests read the extension's ERROR lines.
+    systemProperty("org.jboss.logging.provider", "jdk")
     testLogging {
         events("passed", "skipped", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

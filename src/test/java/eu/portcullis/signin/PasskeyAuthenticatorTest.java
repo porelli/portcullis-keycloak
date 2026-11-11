@@ -220,4 +220,26 @@ class PasskeyAuthenticatorTest {
         authenticator(s2, withModel("security_key", "revoked")).action(s2.context);
         assertEquals("passkey_synced", s2.authNotes.get(PasskeyAuthenticator.KIND_NOTE));
     }
+
+    @Test
+    void failureHasMethodAndUa() {
+        Flow f = new Flow();
+        Flow.Person a = alice(f);
+        a.passkeyValid = in -> false; // the assertion doesn't verify
+        f.headers.put("User-Agent", "Safari/18");
+        post(f, DEVICE_ID);
+        authenticator(f, Configs.plain()).action(f.context);
+        assertFalse(f.status == FlowStatus.SUCCESS);
+        assertFalse(f.eventErrors.isEmpty(), "a LOGIN_ERROR");
+        Map<String, String> d = f.errorDetails.get(f.errorDetails.size() - 1);
+        assertEquals("passkey_device", d.get(History.METHOD), "the kind tried");
+        assertEquals("Safari/18", d.get(History.UA));
+
+        Flow revoked = new Flow(); // a revoked model's security key is tried as synced
+        Flow.Person r = alice(revoked);
+        r.passkeyValid = in -> false;
+        post(revoked, KEY_ID);
+        authenticator(revoked, withModel("security_key", "revoked")).action(revoked.context);
+        assertEquals("passkey_synced", revoked.errorDetails.get(revoked.errorDetails.size() - 1).get(History.METHOD));
+    }
 }

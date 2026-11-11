@@ -107,7 +107,7 @@ public final class SigninConfig {
         this.mdsNextUpdate = mdsNextUpdate;
     }
 
-    /** Whether method is switched on ({@code browser_cert} never is). */
+    /** Whether method is switched on (and not {@link Methods#UNAVAILABLE}). */
     public boolean on(String method) {
         return method != null && methods.contains(method) && !Methods.UNAVAILABLE.contains(method);
     }
@@ -253,7 +253,7 @@ public final class SigninConfig {
             throw new IllegalArgumentException("version " + f.version() + ", want " + VERSION);
         }
 
-        // methods: switched-on ids, sorted, each once; browser_cert can't be on.
+        // methods: switched-on ids, sorted, each once; none of Methods.UNAVAILABLE.
         List<String> ms = f.methods();
         Set<String> methods = new LinkedHashSet<>();
         String prev = null;

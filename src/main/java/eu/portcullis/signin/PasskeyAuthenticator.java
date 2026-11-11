@@ -54,6 +54,9 @@ import org.keycloak.services.messages.Messages;
  * closed); that kind must then be accepted.</li>
  * </ul>
  *
+ * <p>Before the verification it adds the history details {@code pc_method}
+ * (the kind tried) and {@code pc_ua} ({@link History#onFailure}).
+ *
  * <p>It is <b>not</b> a {@code CredentialValidator} (it wraps the stock
  * authenticator instead of extending it): Keycloak's
  * {@code AuthenticationSelectionResolver} runs, in place of the execution
@@ -212,6 +215,7 @@ public class PasskeyAuthenticator implements Authenticator {
                 return;
             }
             Optional<Held> held = heldOf(user, credentialId, Methods.PASSKEY_KINDS);
+            held.ifPresent(h -> History.onFailure(context, h.kind)); // the kind tried, for a LOGIN_ERROR
             if (held.isEmpty() || !kinds.contains(held.get().kind)) {
                 // Not one of the person's passkeys of an accepted kind (another
                 // kind than pc_method asks for, a switched-off kind, unknown).
@@ -222,6 +226,7 @@ public class PasskeyAuthenticator implements Authenticator {
             // in as synced until reclassification rewrites it — and only where
             // synced is accepted.
             String kind = signInKind(user, held.get(), config.get());
+            History.onFailure(context, kind);
             if (!kinds.contains(kind)) {
                 setErrorResponse(context, Messages.WEBAUTHN_ERROR_AUTH_VERIFICATION, "passkey kind not accepted");
                 return;

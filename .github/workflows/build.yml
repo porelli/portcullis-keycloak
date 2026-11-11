@@ -262,6 +262,20 @@ jobs:
           PYTHON: /tmp/smoke-venv/bin/python
         run: bash .github/smoke/run.sh
 
+      # The mtls amr invariant (contract §8, §8.1 "Flows"): a test internal
+      # CA made with openssl (a YubiKey CA and a browser CA under one root,
+      # their CRLs served as http://vault:8200/v1/pki_{int,file}/crl),
+      # Keycloak with core's x509 options (traefik lookup, proxy headers,
+      # truststore directory, CRL cache time); each leaf posted in Traefik's
+      # header: the YubiKey leaf's amr has mtls and never file, the browser
+      # leaf's file and never mtls; a switched-off kind doesn't sign in; the
+      # LOGIN events carry the history details; no error naming portcullis.
+      - name: x509 kinds
+        env:
+          IMAGE: portcullis-keycloak:smoke
+          PYTHON: /tmp/smoke-venv/bin/python
+        run: bash .github/smoke/run.sh x509
+
       # Both platforms, never pushed: every run checks the arm64 image
       # builds. Main's publishing runs write the layer cache (mode=max:
       # every stage, both platforms, one content-addressed scope) that

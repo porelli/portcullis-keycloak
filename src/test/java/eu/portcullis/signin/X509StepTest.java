@@ -6,16 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.webauthn4j.test.AttestationCertificateBuilder;
-import com.webauthn4j.test.TestAttestationUtil;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.cert.X509Certificate;
-import java.security.spec.ECGenParameterSpec;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.security.auth.x500.X500Principal;
 import org.junit.jupiter.api.Test;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.FlowStatus;
@@ -36,6 +32,10 @@ class X509StepTest {
      * name parser (Keycloak's own CN mapping, extractor and user mapper run).
      */
     static {
+        crypto();
+    }
+
+    static synchronized void crypto() {
         if (!org.keycloak.common.crypto.CryptoIntegration.isInitialised()) {
             org.keycloak.common.crypto.UserIdentityExtractorProvider names = new org.keycloak.common.crypto.UserIdentityExtractorProvider() {
                 @Override
@@ -65,13 +65,40 @@ class X509StepTest {
         }
     }
 
-    static X509Certificate certificate(String cn) throws Exception {
-        KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
-        g.initialize(new ECGenParameterSpec("secp256r1"));
-        KeyPair key = g.generateKeyPair();
-        return new AttestationCertificateBuilder(TestAttestationUtil.load3tierTestIntermediateCACertificate(),
-                new X500Principal("CN=" + cn + ", O=Portcullis Test"), key.getPublic())
-                .build(TestAttestationUtil.load3tierTestIntermediateCAPrivateKey());
+    /** A YubiKey certificate (the test pki_int) for cn. */
+    static X509Certificate certificate(String cn) {
+        return TestCas.YUBIKEY.leaf(cn);
+    }
+
+    /** The CA files of the two executions (written once). */
+    static final Path YUBIKEY_CA = caFile(TestCas.YUBIKEY, "yubikey");
+    static final Path BROWSER_CA = caFile(TestCas.BROWSER, "browser");
+
+    private static Path caFile(TestCas.Ca ca, String name) {
+        try {
+            Path p = Files.createTempFile("portcullis-" + name + "-ca", ".pem");
+            p.toFile().deleteOnExit();
+            Files.writeString(p, TestCas.pem(ca.cert()));
+            return p;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** The two executions' configs (contract §8.1 "Flows"): x509-config and x509-browser-config. */
+    static Map<String, String> yubikeyConfig() {
+        Map<String, String> c = new HashMap<>(X509);
+        c.put(X509Authenticator.METHOD_CONFIG, "yubikey_cert");
+        c.put(X509Authenticator.CA_CONFIG, YUBIKEY_CA.toString());
+        return c;
+    }
+
+    static Map<String, String> browserConfig() {
+        Map<String, String> c = new HashMap<>(X509);
+        c.put(X509Authenticator.METHOD_CONFIG, "browser_cert");
+        c.put(X509Authenticator.CA_CONFIG, BROWSER_CA.toString());
+        c.put("default.reference.value", "file");
+        return c;
     }
 
     static final Map<String, String> X509 = Map.of(
@@ -81,26 +108,35 @@ class X509StepTest {
             "default.reference.value", "mtls");
 
     /** alice signed in with her security key; mallory exists too; the request presents cn's certificate. */
-    static Flow step(String cn) throws Exception {
+    static Flow step(String cn) {
+        return step(cn == null ? null : certificate(cn));
+    }
+
+    /** The same with this leaf presented (null: none); the flow holds both x509 executions. */
+    static Flow step(X509Certificate leaf) {
         Flow f = new Flow();
         f.user = f.person("u-alice", "alice").passkey(PasskeyClassifier.TYPE_SECURITY_KEY, Flow.bytes("k")).model;
         f.person("u-mallory", "mallory");
-        f.certificates = cn == null ? null : new X509Certificate[] {certificate(cn)};
-        f.config(new HashMap<>(X509));
-        // The flow holds portcullis-x509 in a sub-flow, with this config.
+        f.certificates = leaf == null ? null : new X509Certificate[] {leaf};
+        f.config(yubikeyConfig());
+        // The flow holds the two portcullis-x509 executions in a sub-flow, each with its config.
         AuthenticationExecutionModel sub = new AuthenticationExecutionModel();
         sub.setAuthenticatorFlow(true);
         sub.setFlowId("flow-signin");
+        f.flows.put("flow-top", List.of(sub));
+        f.flows.put("flow-signin", List.of(x509(f, "cfg-x509", yubikeyConfig()), x509(f, "cfg-x509-browser", browserConfig())));
+        return f;
+    }
+
+    private static AuthenticationExecutionModel x509(Flow f, String id, Map<String, String> config) {
         AuthenticationExecutionModel x509 = new AuthenticationExecutionModel();
         x509.setAuthenticator(X509AuthenticatorFactory.PROVIDER_ID);
-        x509.setAuthenticatorConfig("cfg-x509");
+        x509.setAuthenticatorConfig(id);
         AuthenticatorConfigModel c = new AuthenticatorConfigModel();
-        c.setId("cfg-x509");
-        c.setConfig(new HashMap<>(X509));
-        f.configs.put("cfg-x509", c);
-        f.flows.put("flow-top", List.of(sub));
-        f.flows.put("flow-signin", List.of(x509));
-        return f;
+        c.setId(id);
+        c.setConfig(new HashMap<>(config));
+        f.configs.put(id, c);
+        return x509;
     }
 
     @Test
@@ -159,9 +195,37 @@ class X509StepTest {
         assertEquals(FlowStatus.FORCE_CHALLENGE, other.status, "another person's certificate isn't a candidate");
         assertEquals(TemplateAuthenticator.PAGE, other.page);
 
-        Flow none = step(null);
+        Flow none = step((String) null);
         none.completed("hwk");
         new TemplateAuthenticator(() -> cfg).authenticate(none.context);
         assertEquals(FlowStatus.FORCE_CHALLENGE, none.status);
+
+        // Her browser certificate is no YubiKey certificate: it can't complete a yubikey_cert step.
+        Flow browser = step(TestCas.BROWSER.leaf("alice"));
+        browser.completed("hwk");
+        new TemplateAuthenticator(() -> cfg).authenticate(browser.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, browser.status);
+    }
+
+    @Test
+    void browserCertCompletableWithOwnLeaf() {
+        String any = "{\"op\": \"any\", \"items\": [\"browser_cert\"]}";
+        SigninConfig cfg = Configs.client(X509AuthenticatorTest.ALL, false, any);
+        Flow own = step(TestCas.BROWSER.leaf("alice"));
+        own.completed("hwk");
+        new TemplateAuthenticator(() -> cfg).authenticate(own.context);
+        assertEquals(FlowStatus.FLOW_RESET, own.status, "her browser certificate completes the step");
+        own.resetListener.run();
+        assertEquals(java.util.Optional.of("browser_cert"), PcMethod.requested(own.context));
+
+        Flow yubikey = step(TestCas.YUBIKEY.leaf("alice")); // a YubiKey leaf isn't a browser certificate
+        yubikey.completed("hwk");
+        new TemplateAuthenticator(() -> cfg).authenticate(yubikey.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, yubikey.status);
+
+        Flow other = step(TestCas.BROWSER.leaf("mallory"));
+        other.completed("hwk");
+        new TemplateAuthenticator(() -> cfg).authenticate(other.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, other.status);
     }
 }

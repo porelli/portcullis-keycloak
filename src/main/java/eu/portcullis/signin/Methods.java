@@ -34,8 +34,8 @@ public final class Methods {
     /** The six method ids, in canonical order. */
     public static final List<String> IDS = TABLE.stream().map(Info::id).toList();
 
-    /** Methods that can't be switched on yet: off whatever the file says. */
-    static final Set<String> UNAVAILABLE = Set.of("browser_cert");
+    /** Methods that can't be switched on yet: off whatever the file says (none since sign-in part 2). */
+    static final Set<String> UNAVAILABLE = Set.of();
 
     /** The three passkey kinds, weakest first. */
     public static final List<String> PASSKEY_KINDS = List.of("passkey_synced", "passkey_device", "security_key");

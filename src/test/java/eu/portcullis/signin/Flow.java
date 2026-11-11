@@ -70,6 +70,10 @@ final class Flow {
     final Map<String, UserModel> users = new HashMap<>();
     final Map<String, UserModel> emails = new HashMap<>();
     final List<String> eventErrors = new ArrayList<>();
+    /** The event's details at each error (a LOGIN_ERROR as Keycloak would send it). */
+    final List<Map<String, String>> errorDetails = new ArrayList<>();
+    /** The request's HTTP headers. */
+    final Map<String, String> headers = new HashMap<>();
     final List<String> formErrors = new ArrayList<>();
 
     UserModel user;
@@ -186,12 +190,19 @@ final class Flow {
             @Override
             public void error(String e) {
                 eventErrors.add(e);
+                Map<String, String> d = getEvent().getDetails();
+                errorDetails.add(d == null ? Map.of() : new HashMap<>(d));
             }
 
             @Override
             public void success() {}
         };
-        HttpRequest http = Fake.named("http").on("getDecodedFormParameters", a -> form).as(HttpRequest.class);
+        jakarta.ws.rs.core.HttpHeaders httpHeaders = Fake.named("headers")
+                .on("getHeaderString", a -> headers.entrySet().stream().filter(h -> h.getKey().equalsIgnoreCase((String) a[0]))
+                        .map(Map.Entry::getValue).findFirst().orElse(null))
+                .as(jakarta.ws.rs.core.HttpHeaders.class);
+        HttpRequest http = Fake.named("http").on("getDecodedFormParameters", a -> form)
+                .ret("getHttpHeaders", httpHeaders).as(HttpRequest.class);
         UriInfo uri = Fake.named("uri").ret("getBaseUri", BASE).as(UriInfo.class);
         AuthenticationExecutionModel execution = new AuthenticationExecutionModel();
         execution.setId("exec-current");
@@ -253,6 +264,12 @@ final class Flow {
                 .on("getStatus", a -> status)
                 .on("getError", a -> error)
                 .as(AuthenticationFlowContext.class);
+    }
+
+    /** The event's details now (e.g. the LOGIN event's at the end of the flow). */
+    Map<String, String> eventDetails() {
+        Map<String, String> d = event.getEvent().getDetails();
+        return d == null ? Map.of() : d;
     }
 
     /** Whether Keycloak's flow would count this answer as a brute-force failure (FAILED, FAILURE_CHALLENGE). */

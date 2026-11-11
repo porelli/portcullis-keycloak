@@ -103,6 +103,21 @@ class NeedsStrongerTemplateTest {
     }
 
     @Test
+    void namesBothCertificates() throws Exception {
+        // D34: "YubiKey certificate" and "Browser certificate"; every link is the Sign-in page.
+        String signin = "https://people.example.com/signin";
+        NeedsStronger page = NeedsStronger.of("Gitea", Set.of("passkey_synced"),
+                List.of(Set.of("yubikey_cert"), Set.of("browser_cert")), Set.of(), false, signin);
+        String html = render(page).replaceAll("\\s+", " ");
+        assertTrue(html.contains("<li>a YubiKey certificate</li>"), html);
+        assertTrue(html.contains("<li>a browser certificate</li>"), html);
+        assertTrue(html.contains("href=\"" + signin + "\">Sign-in methods</a>"), html);
+        assertTrue(html.contains("or ask your admin"), html);
+        assertFalse(html.toLowerCase(Locale.ROOT).contains("mtls"), html);
+        assertFalse(html.toLowerCase(Locale.ROOT).contains("client certificate"), html);
+    }
+
+    @Test
     void neverUnescapes() throws Exception {
         String ftl = Files.readString(Path.of("src/main/resources/theme-resources/templates", TemplateAuthenticator.PAGE));
         assertFalse(ftl.contains("?no_esc"));

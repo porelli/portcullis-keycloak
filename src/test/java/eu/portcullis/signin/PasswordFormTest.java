@@ -99,4 +99,20 @@ class PasswordFormTest {
         new PasswordForm(() -> ON).authenticate(f.context);
         assertEquals(FlowStatus.ATTEMPTED, f.status);
     }
+
+    @Test
+    void wrongPasswordEventHasMethodAndUa() {
+        Flow f = new Flow();
+        f.person("u-alice", "alice").password = RIGHT;
+        f.headers.put("User-Agent", "curl/8.10\r\nX-Injected: 1");
+        f.form.putSingle("username", "alice");
+        f.form.putSingle("password", "nope");
+        new PasswordForm(() -> ON).action(f.context);
+        assertTrue(f.countedByBruteForce());
+        assertFalse(f.eventErrors.isEmpty());
+        java.util.Map<String, String> d = f.errorDetails.get(f.errorDetails.size() - 1);
+        assertEquals("password", d.get(History.METHOD));
+        assertEquals("curl/8.10X-Injected: 1", d.get(History.UA), "control characters removed");
+        assertFalse(d.containsValue("nope"), "never the password");
+    }
 }

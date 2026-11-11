@@ -19,8 +19,8 @@ class TemplateAuthenticatorTest {
     private static TemplateAuthenticator check(SigninConfig cfg, boolean certificate) {
         return new TemplateAuthenticator(() -> cfg) {
             @Override
-            protected boolean certificateIsTheirs(AuthenticationFlowContext context, org.keycloak.models.UserModel user) {
-                return certificate;
+            protected boolean certificateIsTheirs(AuthenticationFlowContext context, org.keycloak.models.UserModel user, String method) {
+                return certificate && "yubikey_cert".equals(method);
             }
         };
     }
@@ -69,7 +69,7 @@ class TemplateAuthenticatorTest {
         // a certificate always → ask your admin.
         assertFalse(page.isSetUpSecurityKey());
         assertTrue(page.isAskAdmin());
-        assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in", page.getAccountUrl());
+        assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in", page.getSigninUrl());
 
         Flow on = new Flow(); // add_stronger on: the security key gets its set-up link
         on.user = on.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
@@ -216,5 +216,124 @@ class TemplateAuthenticatorTest {
         check(cfg, false).authenticate(alice.context);
         reset(alice);
         assertEquals(java.util.Optional.of("password"), PcMethod.requested(alice.context));
+    }
+
+    @Test
+    void browserCertCompletableWithOwnLeaf() {
+        String any = "{\"op\": \"any\", \"items\": [\"browser_cert\"]}";
+        SigninConfig cfg = Configs.client(X509AuthenticatorTest.ALL, false, any);
+        Flow f = signedIn("hwk");
+        new TemplateAuthenticator(() -> cfg) {
+            @Override
+            protected boolean certificateIsTheirs(AuthenticationFlowContext context, org.keycloak.models.UserModel user, String method) {
+                return "browser_cert".equals(method); // her pki_file leaf is presented
+            }
+        }.authenticate(f.context);
+        reset(f);
+        assertEquals(java.util.Optional.of("browser_cert"), PcMethod.requested(f.context));
+
+        Flow yubikeyOnly = signedIn("hwk"); // only a YubiKey leaf: no browser_cert step
+        check(cfg, true).authenticate(yubikeyOnly.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, yubikeyOnly.status);
+    }
+
+    @Test
+    void loginEventCarriesHistoryDetails() {
+        Flow f = signedIn("hwk");
+        f.headers.put("User-Agent", "Mozilla/5.0 (Macintosh) Firefox/140.0");
+        f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "security_key");
+        f.event.detail(History.METHOD, "security_key"); // the passkey's pc_method, before its check
+        check(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), false).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        java.util.Map<String, String> d = f.eventDetails();
+        assertEquals("sign_in", d.get(History.KIND));
+        assertEquals("security_key", d.get(History.METHODS));
+        assertEquals("security_key", d.get(History.SESSION));
+        assertEquals("Mozilla/5.0 (Macintosh) Firefox/140.0", d.get(History.UA));
+        assertFalse(d.containsKey(History.METHOD), "pc_method names a failure only");
+        assertFalse(d.containsKey("pc_act"), "reserved for part 3");
+
+        // An unlisted client gets them too; several methods in the table's order.
+        Flow u = signedIn("pwd", "hwk");
+        u.clientId = "portcullis-forward-auth";
+        u.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        u.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "security_key");
+        check(Configs.client(Configs.WITH_PASSWORD, false, Configs.STRONG), false).authenticate(u.context);
+        assertEquals(FlowStatus.SUCCESS, u.status);
+        assertEquals("password,security_key", u.eventDetails().get(History.METHODS));
+        assertEquals("password,security_key", u.eventDetails().get(History.SESSION));
+        assertEquals("", u.eventDetails().get(History.UA), "no User-Agent");
+    }
+
+    @Test
+    void ssoReuseIsSso() {
+        Flow f = signedIn("hwk"); // the SSO session's amr, merged by auth-cookie
+        f.authNotes.put(CookieAuthenticator.SSO_NOTE, "true");
+        check(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), false).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("sso", f.eventDetails().get(History.KIND));
+        assertEquals("", f.eventDetails().get(History.METHODS));
+        assertEquals("security_key", f.eventDetails().get(History.SESSION));
+    }
+
+    @Test
+    void stepUpKind() {
+        Flow f = signedIn("spk", "hwk"); // an SSO session (synced passkey) + a security key now
+        f.authNotes.put(CookieAuthenticator.SSO_NOTE, "true");
+        f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "security_key");
+        check(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), false).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("step_up", f.eventDetails().get(History.KIND));
+        assertEquals("security_key", f.eventDetails().get(History.METHODS));
+        assertEquals("passkey_synced,security_key", f.eventDetails().get(History.SESSION));
+    }
+
+    @Test
+    void uaTruncatedAndCleaned() {
+        Flow f = signedIn("hwk");
+        String ua = "Mozilla/5.0\n" + "x".repeat(150) + "\u0000\t\r" + "y".repeat(150);
+        f.headers.put("User-Agent", ua);
+        String got = History.ua(f.context);
+        assertEquals(256, got.length());
+        assertTrue(got.chars().noneMatch(Character::isISOControl), got);
+        assertTrue(got.startsWith("Mozilla/5.0xxx"), got);
+        assertEquals("", History.clean(null));
+        assertEquals("ab", History.clean("a\u007fb\u0085"));
+        // A surrogate pair is never cut in half.
+        String emoji = "a".repeat(255) + "\uD83D\uDE00";
+        assertEquals("a".repeat(255), History.clean(emoji));
+    }
+
+    @Test
+    void needsStrongerLinksToSigninPage() throws Exception {
+        java.util.function.Function<String, String> saved = TemplateAuthenticator.env;
+        try {
+            TemplateAuthenticator.env = k -> TemplateAuthenticator.SIGNIN_URL_ENV.equals(k) ? "https://people.example.com/signin" : null;
+            Flow f = new Flow();
+            f.user = f.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
+            f.completed("spk");
+            check(Configs.client(Configs.DEFAULT_METHODS, true, Configs.STRONG), false).authenticate(f.context);
+            NeedsStronger page = (NeedsStronger) f.formAttributes.get(TemplateAuthenticator.ATTRIBUTE);
+            assertEquals("https://people.example.com/signin", page.getSigninUrl());
+            String html = NeedsStrongerTemplateTest.render(page);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("href=\"([^\"]*)\"").matcher(html);
+            int links = 0;
+            while (m.find()) {
+                assertEquals("https://people.example.com/signin", m.group(1), html);
+                links++;
+            }
+            assertEquals(2, links, "Set up a security key + Sign-in methods: " + html);
+
+            for (String bad : new String[] {"javascript:alert(1)", "", "https://", "https://a b"}) {
+                TemplateAuthenticator.env = k -> bad;
+                assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in",
+                        TemplateAuthenticator.signinPage(f.context), bad);
+            }
+            TemplateAuthenticator.env = k -> null; // unset: the account console
+            assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in",
+                    TemplateAuthenticator.signinPage(f.context));
+        } finally {
+            TemplateAuthenticator.env = saved;
+        }
     }
 }
