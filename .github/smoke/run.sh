@@ -11,7 +11,8 @@
 #                   http://vault:8200/v1/pki_{int,file}/crl[/delta] from the
 #                   host, Keycloak with core's x509 options (the traefik lookup,
 #                   the proxy settings, the truststore directory, the CRL cache
-#                   time); each leaf posted in Traefik's header.
+#                   time); each leaf posted in Traefik's header. One more
+#                   leaf of each kind is revoked in its own CA's CRL (D30).
 #
 # The admin password is random and only in the environment.
 set -euo pipefail
@@ -67,17 +68,28 @@ if [ "$MODE" = x509 ]; then
   make_ca "$PKI/root" "/CN=smoke.example Root CA"
   make_ca "$PKI/int" "/CN=smoke.example YubiKey Certificate CA" "$PKI/root"
   make_ca "$PKI/file" "/CN=smoke.example Browser Certificate CA" "$PKI/root"
+  mkdir -p "$PKI/truststore" "$PKI/leaves"
+  make_leaf "$PKI/int" alice "$PKI/leaves/yubikey.pem"
+  make_leaf "$PKI/file" alice "$PKI/leaves/browser.pem"
+  # D30: one more leaf of each kind, revoked in its own CA's CRL.
+  make_leaf "$PKI/int" alice "$PKI/leaves/yubikey-revoked.pem"
+  make_leaf "$PKI/file" alice "$PKI/leaves/browser-revoked.pem"
   for ca in int file; do
+    case $ca in int) gone=yubikey-revoked ;; *) gone=browser-revoked ;; esac
+    openssl ca -config "$PKI/$ca/ca.cnf" -keyfile "$PKI/$ca/key.pem" -cert "$PKI/$ca/cert.pem" \
+      -revoke "$PKI/leaves/$gone.pem" 2>/dev/null
     openssl ca -gencrl -config "$PKI/$ca/ca.cnf" -keyfile "$PKI/$ca/key.pem" -cert "$PKI/$ca/cert.pem" -out "$PKI/$ca/crl.pem" 2>/dev/null
     openssl crl -in "$PKI/$ca/crl.pem" -outform DER -out "$PKI/$ca/crl.der"
+    serial=$(openssl x509 -in "$PKI/leaves/$gone.pem" -noout -serial | cut -d= -f2)
+    if ! openssl crl -in "$PKI/$ca/crl.pem" -noout -text | tr -d ' ' | grep -qix "serialnumber:$serial"; then
+      echo "::error::the $ca CRL doesn't list the revoked leaf $serial"
+      exit 1
+    fi
   done
-  mkdir -p "$PKI/truststore" "$PKI/leaves"
   cat "$PKI/root/cert.pem" "$PKI/int/cert.pem" "$PKI/file/cert.pem" > "$PKI/truststore/portcullis-ca-chain.pem"
   cp "$PKI/int/cert.pem" "$PKI/truststore/portcullis-yubikey-ca.pem"
   cp "$PKI/file/cert.pem" "$PKI/truststore/portcullis-browser-ca.pem"
   chmod 644 "$PKI"/truststore/*
-  make_leaf "$PKI/int" alice "$PKI/leaves/yubikey.pem"
-  make_leaf "$PKI/file" alice "$PKI/leaves/browser.pem"
   # Only the CA certificates and CRLs leave this script; the CA keys are deleted now.
   rm -f "$PKI"/*/key.pem
   export SMOKE_PKI=$PKI

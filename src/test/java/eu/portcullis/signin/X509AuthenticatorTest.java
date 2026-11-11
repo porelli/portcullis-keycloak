@@ -264,4 +264,57 @@ class X509AuthenticatorTest {
         new X509Authenticator(false, Configs::plain).action(none.context);
         assertEquals(AuthenticationFlowError.ACCESS_DENIED, none.error);
     }
+
+    /** The request presents this chain to an execution of method; it must step aside (no note, nobody signed in). */
+    private static void stepsAside(String method, Path ca, String why, X509Certificate... chain) {
+        Flow f = presenting(method, ca, chain[0]);
+        f.certificates = chain;
+        new X509Authenticator(false, () -> BOTH).authenticate(f.context);
+        assertEquals(FlowStatus.ATTEMPTED, f.status, why);
+        assertNull(f.user, why);
+        assertNull(f.authNotes.get(X509Authenticator.METHOD_NOTE), why + ": never mtls or file");
+    }
+
+    @Test
+    void selfSignedLeafStepsAside() throws Exception {
+        X509Certificate self = TestCas.selfSigned("CN=alice, O=Portcullis Test");
+        assertEquals(self.getSubjectX500Principal(), self.getIssuerX500Principal());
+        stepsAside("yubikey_cert", yubikeyCa(), "self-signed", self);
+        stepsAside("browser_cert", browserCa(), "self-signed", self);
+        // Self-signed under the CA's own name (a look-alike CA): the name matches, the signature doesn't.
+        X509Certificate likeYubikey = TestCas.selfSigned(TestCas.YUBIKEY.cert().getSubjectX500Principal().getName());
+        assertEquals(TestCas.YUBIKEY.cert().getSubjectX500Principal(), likeYubikey.getIssuerX500Principal());
+        stepsAside("yubikey_cert", yubikeyCa(), "a self-signed look-alike of the YubiKey CA", likeYubikey);
+        X509Certificate likeBrowser = TestCas.selfSigned(TestCas.BROWSER.cert().getSubjectX500Principal().getName());
+        stepsAside("browser_cert", browserCa(), "a self-signed look-alike of the browser CA", likeBrowser);
+    }
+
+    @Test
+    void intermediateAsLeafStepsAside() throws Exception {
+        for (String m : new String[] {"yubikey_cert", "browser_cert"}) {
+            Path ca = "yubikey_cert".equals(m) ? yubikeyCa() : browserCa();
+            stepsAside(m, ca, m + ": the YubiKey CA presented as the leaf", TestCas.YUBIKEY.cert());
+            stepsAside(m, ca, m + ": the browser CA presented as the leaf", TestCas.BROWSER.cert());
+            stepsAside(m, ca, m + ": the root presented as the leaf", com.webauthn4j.test.TestAttestationUtil.load3tierTestRootCACertificate());
+        }
+    }
+
+    @Test
+    void onlyChainZeroIsJudged() throws Exception {
+        // The other kind's leaf first, this execution's own leaf second: chain[0] decides, so it steps aside.
+        stepsAside("yubikey_cert", yubikeyCa(), "browser leaf first", TestCas.BROWSER.leaf("alice"), TestCas.YUBIKEY.leaf("alice"));
+        stepsAside("browser_cert", browserCa(), "YubiKey leaf first", TestCas.YUBIKEY.leaf("alice"), TestCas.BROWSER.leaf("alice"));
+        // The CA itself after a leaf of the other kind: still chain[0] only.
+        stepsAside("yubikey_cert", yubikeyCa(), "browser leaf + the YubiKey CA", TestCas.BROWSER.leaf("alice"), TestCas.YUBIKEY.cert());
+        // And the other way: its own leaf first, an extra certificate after, signs in as its own method only.
+        Flow f = presenting("yubikey_cert", yubikeyCa(), TestCas.YUBIKEY.leaf("alice"));
+        f.certificates = new X509Certificate[] {TestCas.YUBIKEY.leaf("alice"), TestCas.BROWSER.leaf("alice")};
+        new X509Authenticator(false, () -> BOTH).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("yubikey_cert", f.authNotes.get(X509Authenticator.METHOD_NOTE));
+        Flow b = presenting("browser_cert", browserCa(), TestCas.BROWSER.leaf("alice"));
+        b.certificates = new X509Certificate[] {TestCas.BROWSER.leaf("alice"), TestCas.YUBIKEY.leaf("alice")};
+        new X509Authenticator(false, () -> BOTH).authenticate(b.context);
+        assertEquals("browser_cert", b.authNotes.get(X509Authenticator.METHOD_NOTE));
+    }
 }

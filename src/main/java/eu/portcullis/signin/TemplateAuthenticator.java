@@ -89,13 +89,19 @@ public class TemplateAuthenticator implements Authenticator {
             PasswordForm.METHOD_NOTE, CookieAuthenticator.SSO_NOTE);
     /** The Keycloak env naming the Sign-in page (core: {@code https://people.<domain>/signin}). */
     static final String SIGNIN_URL_ENV = "PORTCULLIS_SIGNIN_URL";
-    /** The environment (a test swaps it). */
-    static Function<String, String> env = System::getenv;
 
     private final Supplier<SigninConfig> config;
 
+    /** The environment (the process's; a test gives its own). */
+    private final Function<String, String> env;
+
     public TemplateAuthenticator(Supplier<SigninConfig> config) {
+        this(config, System::getenv);
+    }
+
+    TemplateAuthenticator(Supplier<SigninConfig> config, Function<String, String> env) {
         this.config = config;
+        this.env = env;
     }
 
     @Override
@@ -150,7 +156,7 @@ public class TemplateAuthenticator implements Authenticator {
         }
         LOG.infof("portcullis: %s doesn't meet the sign-in template of %s", user.getUsername(), clientId);
         NeedsStronger page = NeedsStronger.of(cfg.clientName(clientId).orElse(clientId), have, rule.alternatives(),
-                setUp, cfg.addStronger(), signinPage(context));
+                setUp, cfg.addStronger(), signinPage(context, env));
         Response response = context.form().setAttribute(ATTRIBUTE, page).createForm(PAGE);
         context.forceChallenge(response);
     }
@@ -357,6 +363,11 @@ public class TemplateAuthenticator implements Authenticator {
      * account console's signing-in page ({@link #accountUrl}).
      */
     static String signinPage(AuthenticationFlowContext context) {
+        return signinPage(context, System::getenv);
+    }
+
+    /** {@link #signinPage(AuthenticationFlowContext)} with the environment env. */
+    static String signinPage(AuthenticationFlowContext context, Function<String, String> env) {
         String v;
         try {
             v = env.apply(SIGNIN_URL_ENV);

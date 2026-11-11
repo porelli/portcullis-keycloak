@@ -63,6 +63,15 @@ final class TestCas {
                 .build(signer.getPrivate());
     }
 
+    /** A self-signed certificate with this subject (its own name as issuer, signed by its own key). */
+    static X509Certificate selfSigned(String subject) {
+        KeyPair key = keyPair();
+        // A throwaway certificate with that subject, so the builder names it as the issuer.
+        X509Certificate named = new AttestationCertificateBuilder(TestAttestationUtil.load3tierTestRootCACertificate(),
+                new X500Principal(subject), key.getPublic()).build(TestAttestationUtil.load3tierTestRootCAPrivateKey());
+        return new AttestationCertificateBuilder(named, new X500Principal(subject), key.getPublic()).build(key.getPrivate());
+    }
+
     static String pem(X509Certificate c) {
         try {
             return "-----BEGIN CERTIFICATE-----\n"

@@ -306,34 +306,35 @@ class TemplateAuthenticatorTest {
 
     @Test
     void needsStrongerLinksToSigninPage() throws Exception {
-        java.util.function.Function<String, String> saved = TemplateAuthenticator.env;
-        try {
-            TemplateAuthenticator.env = k -> TemplateAuthenticator.SIGNIN_URL_ENV.equals(k) ? "https://people.example.com/signin" : null;
-            Flow f = new Flow();
-            f.user = f.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
-            f.completed("spk");
-            check(Configs.client(Configs.DEFAULT_METHODS, true, Configs.STRONG), false).authenticate(f.context);
-            NeedsStronger page = (NeedsStronger) f.formAttributes.get(TemplateAuthenticator.ATTRIBUTE);
-            assertEquals("https://people.example.com/signin", page.getSigninUrl());
-            String html = NeedsStrongerTemplateTest.render(page);
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("href=\"([^\"]*)\"").matcher(html);
-            int links = 0;
-            while (m.find()) {
-                assertEquals("https://people.example.com/signin", m.group(1), html);
-                links++;
-            }
-            assertEquals(2, links, "Set up a security key + Sign-in methods: " + html);
+        java.util.function.Function<String, String> env =
+                k -> TemplateAuthenticator.SIGNIN_URL_ENV.equals(k) ? "https://people.example.com/signin" : null;
+        SigninConfig cfg = Configs.client(Configs.DEFAULT_METHODS, true, Configs.STRONG);
+        Flow f = new Flow();
+        f.user = f.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
+        f.completed("spk");
+        new TemplateAuthenticator(() -> cfg, env).authenticate(f.context);
+        NeedsStronger page = (NeedsStronger) f.formAttributes.get(TemplateAuthenticator.ATTRIBUTE);
+        assertEquals("https://people.example.com/signin", page.getSigninUrl());
+        String html = NeedsStrongerTemplateTest.render(page);
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("href=\"([^\"]*)\"").matcher(html);
+        int links = 0;
+        while (m.find()) {
+            assertEquals("https://people.example.com/signin", m.group(1), html);
+            links++;
+        }
+        assertEquals(2, links, "Set up a security key + Sign-in methods: " + html);
 
-            for (String bad : new String[] {"javascript:alert(1)", "", "https://", "https://a b"}) {
-                TemplateAuthenticator.env = k -> bad;
-                assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in",
-                        TemplateAuthenticator.signinPage(f.context), bad);
-            }
-            TemplateAuthenticator.env = k -> null; // unset: the account console
-            assertEquals("https://auth.example.com/realms/portcullis/account/account-security/signing-in",
-                    TemplateAuthenticator.signinPage(f.context));
-        } finally {
-            TemplateAuthenticator.env = saved;
+        String account = "https://auth.example.com/realms/portcullis/account/account-security/signing-in";
+        for (String bad : new String[] {"javascript:alert(1)", "", "https://", "https://a b"}) {
+            assertEquals(account, TemplateAuthenticator.signinPage(f.context, k -> bad), bad);
+        }
+        assertEquals(account, TemplateAuthenticator.signinPage(f.context, k -> null), "unset: the account console");
+        Flow unset = new Flow(); // the public constructor reads the process environment (unset in tests)
+        unset.user = unset.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
+        unset.completed("spk");
+        new TemplateAuthenticator(() -> cfg).authenticate(unset.context);
+        if (System.getenv(TemplateAuthenticator.SIGNIN_URL_ENV) == null) {
+            assertEquals(account, ((NeedsStronger) unset.formAttributes.get(TemplateAuthenticator.ATTRIBUTE)).getSigninUrl());
         }
     }
 }

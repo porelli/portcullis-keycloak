@@ -26,7 +26,9 @@ the person) and started Keycloak with core's x509 options. Each leaf is posted
 in Traefik's X-Forwarded-Tls-Client-Cert header (base64 DER, the traefik lookup's form):
 the YubiKey leaf signs in with amr mtls and never file, the browser leaf with
 file and never mtls; with browser_cert off the browser leaf doesn't sign in,
-with yubikey_cert off neither does the YubiKey leaf; the LOGIN events carry
+with yubikey_cert off neither does the YubiKey leaf; a leaf of each kind
+revoked in its own CA's CRL never signs in (D30) while the other leaf of that
+kind still does, as mtls / file; the LOGIN events carry
 the history details (pc_kind, pc_methods, pc_session, pc_ua); and Keycloak
 logs no error naming portcullis. The CRLs are served on 0.0.0.0:8200 (the
 container reaches the host as vault).
@@ -406,6 +408,20 @@ def x509_main():
     check(cert_sign_in(yubikey) is None, "x509 kinds: with yubikey_cert off the YubiKey leaf doesn't sign in (never as file)")
     code = cert_sign_in(browser)
     check(code is not None and "mtls" not in amr_of(code), "x509 kinds: with yubikey_cert off the browser leaf still signs in, without mtls")
+
+    # D30: each CA's CRL lists one revoked leaf of its kind (Keycloak's own CRL check, abort if not updated).
+    x509_config(ALL_METHODS)
+    mark = len(log_lines())
+    for kind, amr, other in (("yubikey", "mtls", "file"), ("browser", "file", "mtls")):
+        gone = leaf_header(os.path.join(pki, "leaves", f"{kind}-revoked.pem"))
+        check(cert_sign_in(gone) is None, f"x509 kinds: the revoked {kind} leaf doesn't sign in")
+        code = cert_sign_in(yubikey if kind == "yubikey" else browser)
+        got = amr_of(code) if code else None
+        check(got is not None and amr in got and other not in got,
+              f"x509 kinds: the {kind} leaf that isn't revoked still signs in as {amr}: {got}")
+    # Refused by the revocation check itself (Keycloak's X.509 code steps aside without a LOGIN_ERROR).
+    why = [l for l in log_lines()[mark:] if "Certificate has been revoked" in l]
+    check(len(why) == 2, f"x509 kinds: Keycloak refused both revoked leaves as revoked ({len(why)} log lines)")
 
     bad = [l for l in log_lines() if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)]
     check(not bad, "x509 kinds: no error naming portcullis in Keycloak's log" + ("".join("\n    " + l for l in bad[:10])))
