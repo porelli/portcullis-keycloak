@@ -506,6 +506,36 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "smoke-fresh",
+      "name": "smoke-fresh",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "http://localhost:18081/*"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "portcullis-fresh",
+          "protocol": "openid-connect",
+          "protocolMapper": "portcullis-fresh",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
     }
   ]
 }

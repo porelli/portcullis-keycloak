@@ -62,9 +62,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * ({@code USER_CONFLICT}) when the authentication ends with anyone else.
  *
  * <p>It also writes {@link FreshMapper#NOTE}, the method that signed in
- * this authentication ({@code portcullis.passkey.kind} or
- * {@code portcullis.x509.method}, the stronger while on; else {@code none}),
- * as a client note: the only input of {@code portcullis-fresh}.
+ * this authentication ({@code portcullis.passkey.kind},
+ * {@code portcullis.x509.method} or {@code portcullis.password.method}; the
+ * strongest by D1 strength while on when several ran — e.g. a password then
+ * a step-up passkey; else {@code none}), as a client note: the only input of
+ * {@code portcullis-fresh}.
  */
 public class TemplateAuthenticator implements Authenticator {
     private static final Logger LOG = Logger.getLogger(TemplateAuthenticator.class);
@@ -82,7 +84,7 @@ public class TemplateAuthenticator implements Authenticator {
     static final String UNAVAILABLE = "portcullisSignInUnavailable";
 
     /** Notes carried over a step's flow reset (Keycloak's reset clears every authentication note). */
-    private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE);
+    private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE, PasswordForm.METHOD_NOTE);
 
     private final Supplier<SigninConfig> config;
 
@@ -228,13 +230,12 @@ public class TemplateAuthenticator implements Authenticator {
         });
     }
 
-    /** The method that signed in this authentication (the stronger one, while on), else {@code none}. */
+    /** The method that signed in this authentication (the strongest one, while on), else {@code none}. */
     static String freshMethod(AuthenticationSessionModel a, SigninConfig cfg) {
         String best = NONE;
         for (String n : KEPT_NOTES) {
             String m = a.getAuthNote(n);
-            boolean fresh = m != null && (Methods.PASSKEY_KINDS.contains(m) || X509Authenticator.YUBIKEY_CERT.equals(m));
-            if (fresh && cfg.on(m) && (NONE.equals(best) || Methods.tenths(m) > Methods.tenths(best))) {
+            if (FreshMapper.isFreshMethod(m) && cfg.on(m) && (NONE.equals(best) || Methods.tenths(m) > Methods.tenths(best))) {
                 best = m;
             }
         }

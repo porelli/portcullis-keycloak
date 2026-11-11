@@ -19,19 +19,22 @@ import org.keycloak.services.managers.AuthenticationManager;
  * {@code portcullis-fresh-auth} client: the ID token claim {@code pc_fresh}
  * (a JSON string; the name is fixed, any {@code claim.name} config is
  * ignored) = the method id of the authenticator that signed the person in
- * in <b>this</b> authentication — a passkey kind or {@code yubikey_cert},
- * only while that method is on.
+ * in <b>this</b> authentication — a passkey kind, {@code yubikey_cert} or
+ * {@code password}, only while that method is on (the strongest by D1
+ * strength when several ran). Which methods approve what is the Hub's check
+ * against the governing template (contract §8).
  *
  * <p>The value comes only from the client note {@link #NOTE}, which
  * {@code portcullis-template} writes at the end of every authentication from
  * that authentication's notes ({@code portcullis.passkey.kind},
- * {@code portcullis.x509.method}; {@code none} otherwise, so an earlier
+ * {@code portcullis.x509.method}, {@code portcullis.password.method};
+ * {@code none} otherwise, so an earlier
  * authentication's value never survives). Keycloak copies an authentication
  * session's client notes into the client session; authentication notes don't
  * reach the token endpoint. User-session notes and {@code amr} are never
  * read. A client session marked as signed in by the SSO cookie alone gets no
- * claim either, so {@code auth-cookie}, the password form and the setup-link
- * flow never set it.
+ * claim either, so {@code auth-cookie} (an SSO session reused) and the
+ * setup-link flow never set it.
  */
 public final class FreshMapper extends AbstractOIDCProtocolMapper implements OIDCIDTokenMapper {
     public static final String PROVIDER_ID = "portcullis-fresh";
@@ -66,10 +69,18 @@ public final class FreshMapper extends AbstractOIDCProtocolMapper implements OID
             return;
         }
         String m = clientSession.getNote(NOTE);
-        boolean method = m != null && (Methods.PASSKEY_KINDS.contains(m) || X509Authenticator.YUBIKEY_CERT.equals(m));
-        if (method && config.get().on(m)) {
+        if (isFreshMethod(m) && config.get().on(m)) {
             token.getOtherClaims().put(CLAIM, m);
         }
+    }
+
+    /**
+     * Whether m is a method an authenticator of this authentication can write:
+     * a passkey kind, {@code yubikey_cert} or {@code password} (never
+     * {@code browser_cert}, not available yet; never {@code inv}).
+     */
+    static boolean isFreshMethod(String m) {
+        return m != null && (Methods.PASSKEY_KINDS.contains(m) || X509Authenticator.YUBIKEY_CERT.equals(m) || PasswordForm.PASSWORD.equals(m));
     }
 
     @Override
@@ -89,7 +100,7 @@ public final class FreshMapper extends AbstractOIDCProtocolMapper implements OID
 
     @Override
     public String getHelpText() {
-        return "ID token claim pc_fresh: the passkey kind or yubikey_cert that signed in this authentication.";
+        return "ID token claim pc_fresh: the passkey kind, yubikey_cert or password that signed in this authentication.";
     }
 
     @Override

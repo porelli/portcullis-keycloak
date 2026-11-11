@@ -73,18 +73,21 @@ class PasswordFormTest {
             assertEquals(java.util.List.of(Errors.INVALID_USER_CREDENTIALS), f.eventErrors, typed);
             assertEquals(java.util.List.of(PasswordForm.REFUSED), f.formErrorsOrFieldErrors(), typed);
             assertNull(f.user, typed);
+            assertNull(f.authNotes.get(PasswordForm.METHOD_NOTE), typed + ": no password sign-in, no pc_fresh");
             for (Flow.Person p : f.people()) {
                 assertTrue(p.checked.isEmpty(), typed + ": the password is never checked");
             }
         }
         Flow alice = login("alice");
         assertEquals(FlowStatus.SUCCESS, alice.status);
+        assertEquals("password", alice.authNotes.get(PasswordForm.METHOD_NOTE));
         Flow wrong = new Flow(); // a wrong password, for comparison, is counted
         wrong.person("u-alice", "alice").password = RIGHT;
         wrong.form.putSingle("username", "alice");
         wrong.form.putSingle("password", "nope");
         new PasswordForm(() -> ON).action(wrong.context);
         assertTrue(wrong.countedByBruteForce());
+        assertNull(wrong.authNotes.get(PasswordForm.METHOD_NOTE));
         assertSame(alice.users.get("alice"), alice.user);
     }
 

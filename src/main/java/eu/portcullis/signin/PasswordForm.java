@@ -34,6 +34,10 @@ import org.keycloak.services.validation.Validation;
  * which brute-force protection doesn't count — no password was checked, and
  * counting would let anyone lock these accounts out of every method. The
  * timing stays a wrong password's (a dummy hash).</li>
+ * <li>A password that signs the person in writes {@code password} in the
+ * authentication note {@link #METHOD_NOTE}: {@code portcullis-template}
+ * folds it into {@code portcullis.fresh}, so a fresh password sign-in gives
+ * {@code pc_fresh=password} (contract §8.1 {@code portcullis-fresh}).</li>
  * </ul>
  */
 public class PasswordForm extends UsernamePasswordForm {
@@ -44,6 +48,9 @@ public class PasswordForm extends UsernamePasswordForm {
     static final String REFUSED = "portcullisPasswordNotAvailable";
 
     static final String PASSWORD = "password";
+
+    /** The authentication note a password sign-in writes ({@code password}). */
+    public static final String METHOD_NOTE = "portcullis.password.method";
 
     private final Supplier<SigninConfig> config;
 
@@ -91,7 +98,12 @@ public class PasswordForm extends UsernamePasswordForm {
             refuse(context, userSet, typed, target);
             return false;
         }
-        return super.validateForm(context, form);
+        if (!super.validateForm(context, form)) {
+            return false;
+        }
+        // The stock action signs the person in exactly when this is true.
+        context.getAuthenticationSession().setAuthNote(METHOD_NOTE, PASSWORD);
+        return true;
     }
 
     private static UserModel lookup(AuthenticationFlowContext context, String typed) {

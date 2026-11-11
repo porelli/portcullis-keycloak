@@ -12,7 +12,9 @@ authenticators ran.
 With password on: the cold sign-in shows the passkey sign-in, "Try another
 way" reaches the password form, the person signs in with a password and
 registers a passkey (a CDP virtual authenticator); pc_method=password shows
-the password form at once. With password off: the cold sign-in shows the
+the password form at once; a fresh sign-in (prompt=login, max_age=0) with the
+password on the fresh-auth-like client smoke-fresh gives pc_fresh=password,
+and the SSO session reused there gives no pc_fresh. With password off: the cold sign-in shows the
 passkey sign-in without any password choice, a real discoverable assertion
 signs in through portcullis-passkey (the ID token's amr has the kind's spk),
 and the debug log never shows the password form invoked.
@@ -34,6 +36,8 @@ from playwright.sync_api import sync_playwright
 KC = os.environ.get("KC_URL", "http://localhost:18080")
 REALM = "portcullis"
 CLIENT = "smoke"
+# Like the Hub's portcullis-fresh-auth: the portcullis-fresh mapper only.
+FRESH_CLIENT = "smoke-fresh"
 REDIRECT = "http://localhost:18081/cb"
 HUB_DATA = os.environ["HUB_DATA"]
 CONTAINER = os.environ.get("KC_CONTAINER", "kc-smoke")
@@ -115,8 +119,8 @@ def create_person(token, password):
     return uid
 
 
-def authorize_url(**extra):
-    q = {"client_id": CLIENT, "response_type": "code", "scope": "openid",
+def authorize_url(client=CLIENT, **extra):
+    q = {"client_id": client, "response_type": "code", "scope": "openid",
          "redirect_uri": REDIRECT, "state": secrets.token_hex(8)}
     q.update(extra)
     return f"{KC}/realms/{REALM}/protocol/openid-connect/auth?" + urllib.parse.urlencode(q)
@@ -145,12 +149,22 @@ def code_of(url):
     return urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("code", [None])[0]
 
 
-def amr_of(code):
+def id_token_of(code, client=CLIENT):
     tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
-        "grant_type": "authorization_code", "client_id": CLIENT, "code": code, "redirect_uri": REDIRECT}, form=True)
+        "grant_type": "authorization_code", "client_id": client, "code": code, "redirect_uri": REDIRECT}, form=True)
     payload = tok["id_token"].split(".")[1]
     payload += "=" * (-len(payload) % 4)
-    return json.loads(base64.urlsafe_b64decode(payload)).get("amr", [])
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def amr_of(code):
+    return id_token_of(code).get("amr", [])
+
+
+def fresh_sign_in_page(page, what):
+    """The re-authentication the Hub's popup asks for (prompt=login, max_age=0) on the fresh client."""
+    page.goto(authorize_url(FRESH_CLIENT, prompt="login", max_age="0"))
+    passkey_page(page, what)
 
 
 def main():
@@ -203,6 +217,36 @@ def main():
         check(fpage.locator("#password").count() == 1 and fpage.locator("#authenticateWebAuthnButton").count() == 0,
               "pc_method=password: the password form at once")
         fresh.close()
+
+        # The popup's fresh sign-in with a password (contract §8.1 portcullis-fresh):
+        # this authentication's password gives pc_fresh=password; the SSO
+        # session reused without a sign-in gives none.
+        fresh_sign_in_page(page, "fresh sign-in, password on")
+        page.locator("#try-another-way").click()
+        page.wait_for_load_state("domcontentloaded")
+        page.get_by_text("Password", exact=True).first.click()
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#password").count() == 1, "fresh sign-in: the password form")
+        user = page.locator("#username")
+        if user.count() == 1 and user.is_editable():
+            user.fill("alice")
+        page.fill("#password", password)
+        before = len(landed)
+        page.locator("#kc-login").click()
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1]) if len(landed) > before else None
+        check(code is not None, "fresh sign-in: signed in with the password (authorization code)")
+        if code:
+            claims = id_token_of(code, FRESH_CLIENT)
+            check(claims.get("pc_fresh") == "password", f"fresh sign-in with a password: pc_fresh=password (got {claims.get('pc_fresh')!r})")
+        before = len(landed)
+        page.goto(authorize_url(FRESH_CLIENT))
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1]) if len(landed) > before else None
+        check(code is not None, "SSO reuse on the fresh client: a code without a sign-in")
+        if code:
+            claims = id_token_of(code, FRESH_CLIENT)
+            check("pc_fresh" not in claims, f"SSO reuse: no pc_fresh (got {claims.get('pc_fresh')!r})")
 
         # ── Password off ──
         write_config(["passkey_device", "passkey_synced", "security_key", "yubikey_cert"], False)
