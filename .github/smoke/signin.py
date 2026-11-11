@@ -11,7 +11,9 @@ authenticators ran.
 
 With password on: the cold sign-in shows the passkey sign-in, "Try another
 way" reaches the password form, the person signs in with a password and
-registers a passkey (a CDP virtual authenticator); pc_method=password shows
+registers a passkey (a CDP virtual authenticator) — the LOGIN Keycloak sends
+after that required action carries the history details (pc_kind sign_in,
+pc_methods password); pc_method=password shows
 the password form at once; a fresh sign-in (prompt=login, max_age=0) with the
 password on the fresh-auth-like client smoke-fresh gives pc_fresh=password,
 and the SSO session reused there gives no pc_fresh. With password off: the cold sign-in shows the
@@ -190,7 +192,7 @@ def main():
 
     password = secrets.token_urlsafe(18)
     token = admin_token()
-    create_person(token, password)
+    uid = create_person(token, password)
 
     server = HTTPServer(("127.0.0.1", 18081), Callback)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -228,6 +230,15 @@ def main():
         page.wait_for_url("http://localhost:18081/**", timeout=30000)
         check(events["added"] == 1, "password on: a passkey was registered (virtual authenticator)")
         check(code_of(landed[-1]) is not None, "password on: signed in (authorization code)")
+        # That LOGIN is sent after the required action, in the registration's
+        # request with its own event builder: portcullis' required action put
+        # the sign-in's history details back on it (History.reapply).
+        first = [e.get("details", {}) for e in login_events(admin_token(), uid)]
+        want = {"pc_kind": "sign_in", "pc_methods": "password", "pc_session": "password"}
+        got = {k: first[0].get(k) for k in want} if len(first) == 1 else None
+        check(got == want and bool(first[0].get("pc_ua")),
+              f"password on: the LOGIN after the passkey registration carries the history details {want} and pc_ua"
+              + ("" if got == want else f" (got {first})"))
 
         fresh = browser.new_context()
         fpage = fresh.new_page()

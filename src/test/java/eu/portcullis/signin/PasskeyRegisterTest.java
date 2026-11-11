@@ -85,4 +85,69 @@ class PasskeyRegisterTest {
         assertEquals("[\"client-device\",\"hybrid\",\"security-key\"]", other);
         assertEquals("portcullisHints", PasskeyRegister.HINTS_ATTRIBUTE);
     }
+
+    /** A RequiredActionContext over a Flow's authentication session, with its own (later) event builder. */
+    private static final class Action {
+        final Flow signIn = new Flow();
+        final Flow later = new Flow();
+        org.keycloak.authentication.RequiredActionContext.Status status;
+        final org.keycloak.authentication.RequiredActionContext context;
+
+        Action(org.keycloak.models.UserModel user) {
+            context = Fake.named("required action")
+                    .on("getAuthenticationSession", a -> signIn.authSession)
+                    .on("getEvent", a -> later.event)
+                    .on("getUser", a -> user)
+                    .on("success", a -> status = org.keycloak.authentication.RequiredActionContext.Status.SUCCESS)
+                    .on("challenge", a -> status = org.keycloak.authentication.RequiredActionContext.Status.CHALLENGE)
+                    .on("getStatus", a -> status)
+                    .as(org.keycloak.authentication.RequiredActionContext.class);
+            History.onSuccess(signIn.context, Set.of("passkey_synced"), Set.of("passkey_synced"), "sign_in");
+        }
+    }
+
+    private static org.keycloak.models.UserModel withSyncedPasskey() {
+        org.keycloak.models.SubjectCredentialManager creds = Fake.named("credentials")
+                .on("getStoredCredentialsByTypeStream", a -> PasskeyClassifier.TYPE_SYNCED.equals(a[0])
+                        ? java.util.stream.Stream.of(new org.keycloak.credential.CredentialModel())
+                        : java.util.stream.Stream.empty())
+                .as(org.keycloak.models.SubjectCredentialManager.class);
+        return Fake.named("alice").ret("credentialManager", creds).ret("getUsername", "alice")
+                .as(org.keycloak.models.UserModel.class);
+    }
+
+    /** skip_if_exists with a passkey: success in this request, so the LOGIN carries the sign-in's details. */
+    @Test
+    void skipIfExistsReappliesTheHistoryDetails() {
+        Action r = new Action(withSyncedPasskey());
+        r.signIn.clientNotes.put(org.keycloak.models.Constants.KC_ACTION_PARAMETER,
+                org.keycloak.models.Constants.KC_ACTION_PARAMETER_SKIP_IF_EXISTS);
+        new PasskeyRegister(null).requiredActionChallenge(r.context);
+        assertEquals(org.keycloak.authentication.RequiredActionContext.Status.SUCCESS, r.status);
+        assertEquals("sign_in", r.later.eventDetails().get(History.KIND));
+        assertEquals("passkey_synced", r.later.eventDetails().get(History.METHODS));
+    }
+
+    /** processAction: the details only on success (a refusal or a retry leaves the builder alone). */
+    @Test
+    void processActionReappliesOnSuccessOnly() {
+        Action ok = new Action(withSyncedPasskey());
+        new PasskeyRegister(null) {
+            @Override
+            void register(org.keycloak.authentication.RequiredActionContext c) {
+                c.success();
+            }
+        }.processAction(ok.context);
+        assertEquals("sign_in", ok.later.eventDetails().get(History.KIND));
+        assertEquals("passkey_synced", ok.later.eventDetails().get(History.SESSION));
+
+        Action refused = new Action(withSyncedPasskey());
+        new PasskeyRegister(null) {
+            @Override
+            void register(org.keycloak.authentication.RequiredActionContext c) {
+                c.challenge(null);
+            }
+        }.processAction(refused.context);
+        assertFalse(refused.later.eventDetails().containsKey(History.KIND));
+    }
 }

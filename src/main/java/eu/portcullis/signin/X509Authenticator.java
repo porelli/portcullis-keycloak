@@ -218,6 +218,20 @@ public class X509Authenticator extends X509ClientCertificateAuthenticator {
     }
 
     /**
+     * Whether this request presents a leaf issued by the CA of model's
+     * {@link #CA_CONFIG} ({@link Offer}: an X.509 "Try another way" row
+     * only then). No leaf: false, and the CA file isn't read.
+     */
+    boolean presentsOwnLeaf(AuthenticationFlowContext context, AuthenticatorConfigModel model) {
+        String m = method(model);
+        if (m == null) {
+            return false;
+        }
+        X509Certificate leaf = leaf(context);
+        return leaf != null && ownLeaf(model, m, leaf);
+    }
+
+    /**
      * The account the certificate this request presents maps to, with the
      * given execution's X.509 config (Keycloak's identity extractor and user
      * mapper), only when the leaf was issued by that execution's CA; empty

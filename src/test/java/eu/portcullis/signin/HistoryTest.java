@@ -43,4 +43,37 @@ class HistoryTest {
         History.onFailure(f.context, "security_key"); // the newest try wins
         assertEquals("security_key", f.eventDetails().get(History.METHOD));
     }
+
+    /**
+     * A LOGIN after a required action is sent in a later request with that
+     * request's builder: onSuccess keeps its details in authentication notes
+     * and reapply puts them on another builder, empty values included.
+     */
+    @Test
+    void successDetailsReappliedOnALaterBuilder() {
+        Flow f = new Flow();
+        f.headers.put("user-agent", "UA");
+        History.onSuccess(f.context, Set.of(), Set.of("security_key"), "sso");
+        assertEquals("sso", f.authNotes.get(History.NOTE_PREFIX + History.KIND));
+        assertEquals("", f.authNotes.get(History.NOTE_PREFIX + History.METHODS));
+
+        Flow later = new Flow(); // the required action's request: a fresh builder
+        later.event.detail(History.METHOD, "password");
+        History.reapply(f.authSession, later.event);
+        Map<String, String> d = later.eventDetails();
+        assertEquals("sso", d.get(History.KIND));
+        assertEquals("", d.get(History.METHODS));
+        assertEquals("security_key", d.get(History.SESSION));
+        assertEquals("UA", d.get(History.UA));
+        assertFalse(d.containsKey(History.METHOD));
+        assertEquals(f.eventDetails(), d);
+    }
+
+    @Test
+    void nothingReappliedWithoutTheTemplatesNotes() {
+        Flow f = new Flow();
+        Flow later = new Flow();
+        History.reapply(f.authSession, later.event);
+        assertFalse(later.eventDetails().containsKey(History.KIND));
+    }
 }
