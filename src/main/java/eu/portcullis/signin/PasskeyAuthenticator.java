@@ -1,5 +1,7 @@
 package eu.portcullis.signin;
 
+import eu.portcullis.signin.store.PasskeyEntity;
+import eu.portcullis.signin.store.PasskeyStore;
 import jakarta.ws.rs.core.MultivaluedMap;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -7,7 +9,10 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 import org.keycloak.WebAuthnConstants;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
@@ -43,6 +48,10 @@ import org.keycloak.services.messages.Messages;
  * <li>When the person is already known (a step-up: {@code auth-cookie} set
  * them), the WebAuthn request lists exactly their credentials of the
  * accepted kinds ({@code allowCredentials}); none = it steps aside.</li>
+ * <li>A passkey whose model's trust-list entry is {@code revoked} signs in
+ * as {@code passkey_synced}, whatever its stored kind, until reclassification
+ * rewrites it (a missing or unreadable store row counts the same: fail
+ * closed); that kind must then be accepted.</li>
  * </ul>
  *
  * <p>It is <b>not</b> a {@code CredentialValidator} (it wraps the stock
@@ -60,11 +69,22 @@ public class PasskeyAuthenticator implements Authenticator {
     /** The authentication note holding the kind (method id) that signed in. */
     public static final String KIND_NOTE = "portcullis.passkey.kind";
 
+    private static final Logger LOG = Logger.getLogger(PasskeyAuthenticator.class);
+    private static final String SYNCED = "passkey_synced";
+
     private final Stock stock;
     private final Supplier<SigninConfig> config;
 
     public PasskeyAuthenticator(KeycloakSession session, Supplier<SigninConfig> config) {
-        this.stock = new Stock(session, config);
+        this(session, config, id -> PasskeyStore.of(session).get(id).map(PasskeyEntity::getAaguid));
+    }
+
+    /**
+     * {@code aaguidOf}: a Keycloak credential id → the AAGUID of its passkey
+     * store row (empty: no row).
+     */
+    PasskeyAuthenticator(KeycloakSession session, Supplier<SigninConfig> config, Function<String, Optional<String>> aaguidOf) {
+        this.stock = new Stock(session, config, aaguidOf);
         this.config = config;
     }
 
@@ -102,13 +122,15 @@ public class PasskeyAuthenticator implements Authenticator {
     /** The stock passwordless authenticator, with the kinds. */
     static final class Stock extends WebAuthnPasswordlessAuthenticator {
         private final Supplier<SigninConfig> config;
+        private final Function<String, Optional<String>> aaguidOf;
 
         /** The credential type of the passkey being offered or checked (this request only). */
         private String type;
 
-        Stock(KeycloakSession session, Supplier<SigninConfig> config) {
+        Stock(KeycloakSession session, Supplier<SigninConfig> config, Function<String, Optional<String>> aaguidOf) {
             super(session);
             this.config = config;
+            this.aaguidOf = aaguidOf;
         }
 
         /** The kinds this authentication may use: switched on and allowed by {@code pc_method}. */
@@ -189,22 +211,64 @@ public class PasskeyAuthenticator implements Authenticator {
                 setErrorResponse(context, Messages.WEBAUTHN_ERROR_API_GET, "credential id unreadable");
                 return;
             }
-            Optional<String> kind = kindOf(user, credentialId, kinds);
-            if (kind.isEmpty()) {
+            Optional<Held> held = heldOf(user, credentialId, Methods.PASSKEY_KINDS);
+            if (held.isEmpty() || !kinds.contains(held.get().kind)) {
                 // Not one of the person's passkeys of an accepted kind (another
                 // kind than pc_method asks for, a switched-off kind, unknown).
                 setErrorResponse(context, Messages.WEBAUTHN_ERROR_AUTH_VERIFICATION, "passkey kind not accepted");
                 return;
             }
-            type = PasskeyClassifier.typeOf(kind.get());
+            // Its model revoked since it was stored (or no store row): it signs
+            // in as synced until reclassification rewrites it — and only where
+            // synced is accepted.
+            String kind = signInKind(user, held.get(), config.get());
+            if (!kinds.contains(kind)) {
+                setErrorResponse(context, Messages.WEBAUTHN_ERROR_AUTH_VERIFICATION, "passkey kind not accepted");
+                return;
+            }
+            type = PasskeyClassifier.typeOf(held.get().kind);
             try {
                 super.action(context);
             } finally {
                 type = null;
             }
             if (context.getStatus() == FlowStatus.SUCCESS) {
-                context.getAuthenticationSession().setAuthNote(KIND_NOTE, kind.get());
+                context.getAuthenticationSession().setAuthNote(KIND_NOTE, kind);
             }
+        }
+
+        /**
+         * The kind a stored passkey signs in as: its stored kind, capped at
+         * {@code passkey_synced} when the trust list's entry for its model
+         * (the store row's AAGUID) is {@code revoked}, or when that row can't
+         * be read (fail closed: no proof of the stronger kind).
+         */
+        String signInKind(UserModel user, Held held, SigninConfig cfg) {
+            if (SYNCED.equals(held.kind)) {
+                return held.kind;
+            }
+            Optional<String> aaguid;
+            try {
+                aaguid = aaguidOf.apply(held.credential.getId());
+            } catch (RuntimeException e) {
+                LOG.warnf("portcullis: passkey of %s (%s) signs in as %s: its store row can't be read", user.getUsername(), held.kind, SYNCED);
+                return SYNCED;
+            }
+            if (aaguid.isEmpty()) {
+                LOG.warnf("portcullis: passkey of %s (%s) signs in as %s: no store row", user.getUsername(), held.kind, SYNCED);
+                return SYNCED;
+            }
+            UUID id;
+            try {
+                id = UUID.fromString(aaguid.get());
+            } catch (IllegalArgumentException e) {
+                return SYNCED;
+            }
+            if (cfg.authenticator(id).map(t -> "revoked".equals(t.status())).orElse(false)) {
+                LOG.infof("portcullis: passkey of %s (AAGUID %s, %s) signs in as %s: its model is revoked", user.getUsername(), id, held.kind, SYNCED);
+                return SYNCED;
+            }
+            return held.kind;
         }
 
         /** The person the posted passkey claims (its user handle), else the one already known. */
@@ -224,13 +288,16 @@ public class PasskeyAuthenticator implements Authenticator {
             return session.users().getUserById(context.getRealm(), id);
         }
 
-        /** The kind of the person's stored passkey with this credential id, among the accepted kinds. */
-        static Optional<String> kindOf(UserModel user, byte[] credentialId, List<String> kinds) {
+        /** A person's stored passkey: its stored kind and Keycloak credential. */
+        record Held(String kind, CredentialModel credential) {}
+
+        /** The person's stored passkey with this credential id, among kinds. */
+        static Optional<Held> heldOf(UserModel user, byte[] credentialId, List<String> kinds) {
             for (String k : kinds) {
-                boolean found = user.credentialManager().getStoredCredentialsByTypeStream(PasskeyClassifier.typeOf(k))
-                        .anyMatch(c -> sameCredential(c, credentialId));
-                if (found) {
-                    return Optional.of(k);
+                Optional<CredentialModel> found = user.credentialManager().getStoredCredentialsByTypeStream(PasskeyClassifier.typeOf(k))
+                        .filter(c -> sameCredential(c, credentialId)).findFirst();
+                if (found.isPresent()) {
+                    return Optional.of(new Held(k, found.get()));
                 }
             }
             return Optional.empty();

@@ -123,8 +123,10 @@ def authorize_url(**extra):
 
 
 def log_lines():
-    out = subprocess.run(["docker", "logs", CONTAINER], capture_output=True, text=True)
-    return (out.stdout + out.stderr).splitlines()
+    # One stream, in the container's order: slicing by an earlier count
+    # (mark) needs stdout and stderr interleaved, not concatenated.
+    out = subprocess.run(["docker", "logs", CONTAINER], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return out.stdout.splitlines()
 
 
 def not_an_error_page(page, what):

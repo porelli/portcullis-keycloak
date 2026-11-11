@@ -319,8 +319,11 @@ public final class SigninConfig {
             if (t == null || !KINDS.contains(t.kind()) || !STATUSES.contains(t.status())) {
                 throw new IllegalArgumentException("authenticators: an unknown kind or status");
             }
-            if (t.roots().isEmpty()) {
-                throw new IllegalArgumentException("authenticators: an entry without roots");
+            // Contract §8.1: the Hub always publishes a revoked entry, with
+            // `roots: []` when none of its roots is usable (a revocation
+            // needs none); every other entry needs at least one root.
+            if (t.roots().isEmpty() && !"revoked".equals(t.status())) {
+                throw new IllegalArgumentException("authenticators: a certified entry without roots");
             }
             List<X509Certificate> roots = new ArrayList<>(t.roots().size());
             boolean readable = true;

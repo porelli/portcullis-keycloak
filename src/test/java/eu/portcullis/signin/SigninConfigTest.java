@@ -161,6 +161,28 @@ class SigninConfigTest {
         }
     }
 
+    /**
+     * Contract §8.1: a revoked entry may have {@code roots: []} (the Hub
+     * publishes every revoked entry, without the roots it can't use); a
+     * certified one with {@code roots: []} refuses the whole file.
+     */
+    @Test
+    void emptyRootsOnlyForRevoked(@TempDir Path dir) throws Exception {
+        String empty = valid().replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": []");
+        assertNotEquals(valid(), empty, "the mutation applies");
+        String revoked = empty.replace("\"status\": \"certified\", \"roots\": []", "\"status\": \"revoked\", \"roots\": []");
+        assertNotEquals(empty, revoked, "the revoked mutation applies");
+        SigninConfig r = SigninConfig.load(write(dir, "revoked.json", revoked));
+        assertNotSame(SigninConfig.DENY_ALL, r);
+        assertTrue(r.on("security_key"));
+        SigninConfig.Trust t = r.authenticator(UUID.fromString(AAGUID)).orElseThrow();
+        assertEquals("revoked", t.status());
+        assertEquals("security_key", t.kind());
+        assertTrue(t.roots().isEmpty());
+
+        assertDenyAll(SigninConfig.load(write(dir, "certified.json", empty)), "certified + []");
+    }
+
     @Test
     void invalidOrMissingFileIsDenyAll(@TempDir Path dir) throws Exception {
         String ok = valid();
@@ -201,7 +223,7 @@ class SigninConfigTest {
             {"an AAGUID that isn't one", ok.replace(AAGUID, "not-an-aaguid")},
             {"an unknown kind", ok.replace("\"kind\": \"security_key\"", "\"kind\": \"passkey_synced\"")},
             {"an unknown status", ok.replace("\"status\": \"certified\"", "\"status\": \"FIDO_CERTIFIED\"")},
-            {"no roots", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": []")},
+            {"no roots on a certified entry", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": []")},
             {"a root that isn't base64", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": [\"%%%\"]")},
             {"a null root", ok.replaceAll("\"roots\": \\[\"[^\"]*\"\\]", "\"roots\": [null]")},
             {"a negative serial", ok.replace("\"serial\": 87", "\"serial\": -1")},
