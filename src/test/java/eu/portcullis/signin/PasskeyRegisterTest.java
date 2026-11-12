@@ -200,4 +200,37 @@ class PasskeyRegisterTest {
         }.processAction(plain.context);
         assertTrue(registered[0]);
     }
+
+    @Test
+    void policyDriftWarnedOncePerChange() {
+        String realm = "drift-" + System.nanoTime();
+        assertTrue(PasskeyRegister.policyWarning(realm, "direct").isEmpty());
+        String w = PasskeyRegister.policyWarning(realm, "none").orElseThrow();
+        assertEquals("portcullis: the realm's passkey policy asks for attestation none, not direct: passkeys can't be identified"
+                + " and count as synced; run ./portcullis keycloak configure", w);
+        assertTrue(PasskeyRegister.policyWarning(realm, "none").isEmpty(), "the same value: once");
+        assertTrue(PasskeyRegister.policyWarning(realm, "indirect").orElseThrow().contains("attestation indirect,"), "a change: again");
+        assertTrue(PasskeyRegister.policyWarning(realm, "direct").isEmpty());
+        assertTrue(PasskeyRegister.policyWarning(realm, "indirect").isPresent(), "a drift after direct: again");
+        // Per realm; unset and unknown values.
+        String other = realm + "-b";
+        assertTrue(PasskeyRegister.policyWarning(other, null).orElseThrow().contains("attestation not specified,"));
+        assertTrue(PasskeyRegister.policyWarning(other, "").isEmpty(), "blank = not specified, already warned");
+        String odd = PasskeyRegister.policyWarning(other, "x\nFAKE LOG LINE").orElseThrow();
+        assertTrue(odd.contains("attestation an unrecognized value,"));
+        assertFalse(odd.contains("FAKE"), "an unknown value is never logged verbatim");
+        assertTrue(PasskeyRegister.policyWarning(null, "none").isPresent());
+    }
+
+    @Test
+    void noAttestationIsNoneWithAZeroAaguid() {
+        java.util.UUID zero = new java.util.UUID(0, 0);
+        assertTrue(PasskeyRegister.noAttestation(new StoredAttestation("none", new byte[0], new byte[0], zero, true)));
+        assertFalse(PasskeyRegister.noAttestation(new StoredAttestation("none", new byte[0], new byte[0], Fixtures.YUBIKEY, false)));
+        assertFalse(PasskeyRegister.noAttestation(new StoredAttestation("packed", new byte[0], new byte[0], zero, true)));
+        assertFalse(PasskeyRegister.noAttestation(null));
+        // Chromium's none-attestation emulator: what a browser sends under conveyance none.
+        assertTrue(PasskeyRegister.noAttestation(PasskeyClassifier.parse(
+                Fixtures.register(com.webauthn4j.test.EmulatorUtil.NONE_ATTESTATION_AUTHENTICATOR).attestationObject())));
+    }
 }

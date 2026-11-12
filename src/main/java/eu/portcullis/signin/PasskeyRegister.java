@@ -25,6 +25,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.jboss.logging.Logger;
 import org.keycloak.WebAuthnConstants;
 import org.keycloak.authentication.RequiredActionContext;
@@ -59,6 +61,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * ({@link PasskeyStore}) in the same transaction;</li>
  * <li>the add-stronger cap ({@link #cap});</li>
  * <li>the form attribute {@code portcullisHints} ({@link #hintsFor});</li>
+ * <li>a WARN when the realm's passwordless policy doesn't ask for
+ * {@code direct} attestation ({@link #policyWarning}, once per change) and
+ * on each registration without attestation ({@link #noAttestation}): with
+ * any other conveyance the browser zeroes the AAGUID and sends none, so
+ * every new passkey counts as synced;</li>
  * <li>never in an impersonated session ({@link ImpersonationGuard#impersonated},
  * D42): the challenge and the posted registration both answer
  * {@code portcullis-impersonating.ftl} (mode refused), nothing is stored
@@ -80,6 +87,13 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
     /** Message keys (the jar's {@code theme-resources/messages/messages_en.properties}). */
     static final String REFUSED_STRONGER = "portcullisPasskeyStrongerThanSession";
     static final String REFUSED_UNREADABLE = "portcullisPasskeyAttestationUnreadable";
+
+    /** The conveyance core's policy asks for ({@code KC_REALM_SIGNIN_SETTINGS}). */
+    static final String WANTED_CONVEYANCE = "direct";
+    private static final Set<String> CONVEYANCES = Set.of("none", "indirect", "direct", "enterprise", "not specified");
+    private static final UUID ZERO_AAGUID = new UUID(0L, 0L);
+    /** Realm id → the conveyance last warned about (a drift is logged once per change). */
+    private static final Map<String, String> POLICY_WARNED = new ConcurrentHashMap<>();
 
     private static final List<String> KINDS_STRONGEST_FIRST =
             List.of(PasskeyClassifier.SECURITY_KEY, PasskeyClassifier.DEVICE, PasskeyClassifier.SYNCED);
@@ -172,6 +186,43 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
         return new Cap(false, null);
     }
 
+    /**
+     * The WARN for a realm whose passwordless policy asks for another
+     * attestation conveyance than {@code direct}, or empty: once per realm
+     * and value (logged again only after the value changed; back to direct
+     * forgets it). Only the setting itself is named, an unknown value never
+     * verbatim.
+     */
+    static Optional<String> policyWarning(String realmId, String conveyance) {
+        String key = realmId == null ? "" : realmId;
+        String c = conveyance == null || conveyance.isBlank() ? "not specified"
+                : CONVEYANCES.contains(conveyance) ? conveyance : "an unrecognized value";
+        if (WANTED_CONVEYANCE.equals(c)) {
+            POLICY_WARNED.remove(key);
+            return Optional.empty();
+        }
+        if (c.equals(POLICY_WARNED.put(key, c))) {
+            return Optional.empty();
+        }
+        return Optional.of("portcullis: the realm's passkey policy asks for attestation " + c
+                + ", not direct: passkeys can't be identified and count as synced; run ./portcullis keycloak configure");
+    }
+
+    /** Whether a registration carries no attestation: format {@code none} and an all-zero AAGUID. */
+    static boolean noAttestation(StoredAttestation a) {
+        return a != null && "none".equals(a.fmt()) && ZERO_AAGUID.equals(a.aaguid());
+    }
+
+    private static void warnIfPolicyDrifted(RealmModel realm) {
+        try {
+            WebAuthnPolicy policy = realm.getWebAuthnPolicyPasswordless();
+            policyWarning(realm.getId(), policy == null ? null : policy.getAttestationConveyancePreference())
+                    .ifPresent(LOG::warn);
+        } catch (RuntimeException e) {
+            LOG.debug("portcullis: the realm's passkey policy not read for the drift check");
+        }
+    }
+
     /** {@code portcullisHints}: the security key first for {@code lldap_admin} members. */
     static String hintsFor(UserModel user) {
         try {
@@ -259,6 +310,7 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
             return;
         }
 
+        warnIfPolicyDrifted(context.getRealm());
         StoredAttestation a;
         byte[] credentialId;
         try {
@@ -272,6 +324,10 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
 
         SigninConfig cfg = SigninConfig.current();
         String kind = PasskeyClassifier.kind(a, cfg, Instant.now());
+        if (noAttestation(a)) {
+            UserModel u = context.getUser();
+            LOG.warnf("portcullis: passkey registration for %s: no attestation: classified %s", u == null ? "?" : u.getUsername(), kind);
+        }
         RealmModel realm = context.getRealm();
         AuthenticationSessionModel auth = context.getAuthenticationSession();
         UserSessionModel userSession = auth.getParentSession() == null ? null
