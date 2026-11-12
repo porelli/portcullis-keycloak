@@ -117,6 +117,11 @@ class ImpersonationResourceTest {
                 }
 
                 @Override
+                public void mark(KeycloakSession s, RealmModel r, UserModel target) {
+                    ops.add("mark " + target.getUsername());
+                }
+
+                @Override
                 public UserSessionModel create(KeycloakSession s, RealmModel r, UserModel target) {
                     ops.add("create " + target.getUsername());
                     createdSession = Fake.named("alice session").ret("getId", "sid-alice").ret("getUser", target)
@@ -174,7 +179,10 @@ class ImpersonationResourceTest {
         ImpersonationResource.Outcome o = s.run();
         assertEquals(302, o.status(), String.valueOf(s.f.formAttributes));
         assertEquals(URI.create("https://auth.example.com/oauth2/start?rd=https%3A%2F%2Fexample.com%2F"), o.location());
-        assertEquals(List.of("identity", "logOut sid-root", "create alice", "loginCookie alice sid-alice"), s.ops);
+        assertEquals(List.of("identity", "logOut sid-root", "mark alice", "create alice", "loginCookie alice sid-alice"), s.ops);
+        // Recorded in the extension's own table, never as a user attribute (read-only LDAP; never in a token or the account console).
+        assertTrue(s.alice.fake.calls.stream().noneMatch(c -> c.method().toLowerCase(java.util.Locale.ROOT).contains("attribute")),
+                String.valueOf(s.alice.fake.calls.stream().map(Fake.Call::method).toList()));
         // Never IMPERSONATOR_ID: Keycloak's TokenManager.setActClaimFromImpersonator would replace our act
         // with {"sub": <the admin's UUID>, "preferred_username": …} (CI 43137670746).
         assertFalse(s.created.containsKey("IMPERSONATOR_ID"), String.valueOf(s.created));
@@ -235,7 +243,7 @@ class ImpersonationResourceTest {
         assertEquals(ImpersonationResource.PAGE, s.f.page, what);
         ImpersonatingPage page = (ImpersonatingPage) s.f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
         assertEquals("refused", page.getMode(), what);
-        assertTrue(s.ops.stream().noneMatch(op -> op.startsWith("logOut") || op.startsWith("create") || op.startsWith("loginCookie")),
+        assertTrue(s.ops.stream().noneMatch(op -> op.startsWith("logOut") || op.startsWith("mark") || op.startsWith("create") || op.startsWith("loginCookie")),
                 what + ": " + s.ops);
         assertNull(s.createdSession, what);
         assertTrue(s.events.isEmpty(), what);

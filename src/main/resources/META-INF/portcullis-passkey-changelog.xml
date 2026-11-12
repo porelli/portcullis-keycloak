@@ -3,7 +3,8 @@
   The Portcullis sign-in extension's tables (contract §8.1 portcullis-passkey-store,
   plan D5). Keycloak runs this changelog through the JpaEntityProvider
   portcullis-passkey-store. No migration changesets: there are no installs to
-  upgrade from.
+  upgrade from; a feature's new table is its own changeSet (the test server
+  has run the first one).
 -->
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -66,5 +67,27 @@
                 <constraints nullable="false"/>
             </column>
         </createTable>
+    </changeSet>
+
+    <!-- Sign-in part 3 (contract §8.1 "Ending"): the people signed in as, until none of their sessions is impersonated. -->
+    <changeSet author="portcullis" id="portcullis-impersonation-1">
+        <createTable tableName="PORTCULLIS_IMPERSONATED">
+            <column name="USER_ID" type="VARCHAR(255)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_IMPERSONATED"/>
+            </column>
+            <column name="REALM_ID" type="VARCHAR(36)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="USERNAME" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <!-- epoch seconds of the latest start -->
+            <column name="SINCE" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex tableName="PORTCULLIS_IMPERSONATED" indexName="IDX_PORTCULLIS_IMPERSONATED_REALM">
+            <column name="REALM_ID"/>
+        </createIndex>
     </changeSet>
 </databaseChangeLog>

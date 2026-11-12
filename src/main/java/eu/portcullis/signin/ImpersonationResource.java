@@ -106,6 +106,13 @@ public final class ImpersonationResource implements RealmResourceProvider {
 
         UserSessionModel create(KeycloakSession s, RealmModel r, UserModel target);
 
+        /**
+         * Records the person as signed in as ({@code PORTCULLIS_IMPERSONATED}),
+         * in this transaction: the expiry task walks their sessions whatever
+         * the file says, after a restart too.
+         */
+        void mark(KeycloakSession s, RealmModel r, UserModel target);
+
         void loginCookie(KeycloakSession s, RealmModel r, UserModel u, UserSessionModel us);
 
         EventBuilder event(KeycloakSession s, RealmModel r);
@@ -137,6 +144,11 @@ public final class ImpersonationResource implements RealmResourceProvider {
         public UserSessionModel create(KeycloakSession s, RealmModel r, UserModel target) {
             return new UserSessionManager(s).createUserSession(r, target, target.getUsername(),
                     s.getContext().getConnection().getRemoteHost(), AUTH_METHOD, false, null, null);
+        }
+
+        @Override
+        public void mark(KeycloakSession s, RealmModel r, UserModel target) {
+            eu.portcullis.signin.store.ImpersonatedStore.of(s).mark(r, target, Instant.now());
         }
 
         @Override
@@ -274,6 +286,7 @@ public final class ImpersonationResource implements RealmResourceProvider {
         }
 
         ops.logOut(session, realm, adminSession);
+        ops.mark(session, realm, target);
         UserSessionModel us = ops.create(session, realm, target);
         // Never IMPERSONATOR_ID: with it, Keycloak's TokenManager.setActClaimFromImpersonator (26.8.1) runs
         // after every mapper and replaces our act with {"sub": <the admin's user id>, …}.

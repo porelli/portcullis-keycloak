@@ -55,8 +55,11 @@ gets the refused page (403, banner) and nothing is issued, while smoke still
 signs in; with the record gone from the file the next authorize gets the
 ended page and alice's session is logged out at once. The expiry task: a
 second and a third impersonation, each left alone while live (one 15 s run),
-then the record ended in the file, or the file made unreadable — alice's
-session is logged out by the task within 50 s with no browser involved. The
+then the record ended in the file, the record dropped from a readable file
+(only the extension's PORTCULLIS_IMPERSONATED still names alice), or
+Keycloak restarted while the file is unreadable (nothing in memory) —
+alice's session is logged out by the task within 60 s with no browser
+involved. The
 log has no error naming portcullis and never the reason.
 """
 
@@ -624,7 +627,7 @@ def impersonation_main():
         browser.close()
 
         # The expiry task (every 15 s): ended in the file, then an unreadable file (fail closed).
-        for how in ("ended", "unreadable"):
+        for how in ("ended", "dropped", "restart"):
             b = p.chromium.launch()
             c = b.new_context()
             pg = c.new_page()
@@ -649,22 +652,34 @@ def impersonation_main():
             if how == "ended":
                 sn = dict(sn, ended=rfc3339(time.time()))
                 write_impersonation([], [sn])
+            elif how == "dropped":
+                # The record gone from a readable file: only PORTCULLIS_IMPERSONATED still names alice.
+                write_impersonation([], [])
             else:
+                # Keycloak restarted while the file is unreadable: nothing in memory, the table still names alice.
+                subprocess.run(["docker", "stop", CONTAINER], check=True, stdout=subprocess.DEVNULL)
                 path = os.path.join(HUB_DATA, "impersonation.json")
                 with open(path + ".tmp", "w") as f:
                     f.write("{")
                 os.chmod(path + ".tmp", 0o644)
                 os.replace(path + ".tmp", path)
+                subprocess.run(["docker", "start", CONTAINER], check=True, stdout=subprocess.DEVNULL)
+                for _ in range(90):
+                    try:
+                        http("GET", f"{KC}/realms/{REALM}/.well-known/openid-configuration")
+                        break
+                    except Exception:
+                        time.sleep(2)
             gone_after = None
             t0 = time.time()
-            while time.time() - t0 < 50:
+            while time.time() - t0 < 60:
                 alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
                 if not alive:
                     gone_after = time.time() - t0
                     break
                 time.sleep(2)
             check(gone_after is not None, f"impersonation expiry ({how}): alice's session logged out by the task"
-                  + (f" after {gone_after:.0f} s" if gone_after is not None else " (still there after 50 s)"))
+                  + (f" after {gone_after:.0f} s" if gone_after is not None else " (still there after 60 s)"))
             b.close()
 
     # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
@@ -685,7 +700,12 @@ def impersonation_main():
     check(any(d.get("pc_act") == "root" for d in logins), f"impersonation: the LOGIN as alice has pc_act root (got {logins})")
 
     lines = log_lines()
-    bad = [l for l in lines if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)]
+    # The expiry phase writes an unreadable file on purpose: its one ERROR (no file values) is expected.
+    bad = [l for l in lines if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)
+           and "/hub-data/impersonation.json refused (" not in l]
+    check(any("/hub-data/impersonation.json refused (" in l for l in lines), "impersonation: the unreadable file is logged")
+    check(not [l for l in lines if "backchannel logout of an impersonated session failed" in l],
+          "impersonation: the expiry's backchannel logout worked (no fallback removal)")
     check(not bad, "impersonation: no error naming portcullis in Keycloak's log" + "".join("\n    " + l for l in bad[:10]))
     check(not [l for l in lines if IMP_REASON in l], "impersonation: the reason is never in Keycloak's log")
     print(f"{len(failures)} failure(s)")

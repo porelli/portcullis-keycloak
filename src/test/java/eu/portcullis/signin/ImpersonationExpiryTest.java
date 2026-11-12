@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import eu.portcullis.signin.store.ImpersonatedStore;
 import org.junit.jupiter.api.Test;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
@@ -26,6 +27,8 @@ class ImpersonationExpiryTest {
         final Map<String, List<UserSessionModel>> byUser = new HashMap<>();
         final Set<String> loggedOut = new TreeSet<>();
         final List<String> asked = new ArrayList<>();
+        /** PORTCULLIS_IMPERSONATED: user id → mark. */
+        final Map<String, ImpersonatedStore.Mark> marks = new java.util.TreeMap<>();
 
         @Override
         public List<RealmModel> realms(KeycloakSession s) {
@@ -39,8 +42,33 @@ class ImpersonationExpiryTest {
         }
 
         @Override
+        public List<UserSessionModel> sessionsOf(KeycloakSession s, RealmModel r, String userId) {
+            asked.add("id:" + userId);
+            return byUser.entrySet().stream().filter(e -> ("u-" + e.getKey()).equals(userId))
+                    .flatMap(e -> e.getValue().stream()).toList();
+        }
+
+        @Override
+        public List<ImpersonatedStore.Mark> marked(KeycloakSession s, RealmModel r) {
+            return List.copyOf(marks.values());
+        }
+
+        @Override
+        public void unmark(KeycloakSession s, RealmModel r, String userId, long since) {
+            ImpersonatedStore.Mark m = marks.get(userId);
+            if (m != null && m.since() <= since) {
+                marks.remove(userId);
+            }
+        }
+
+        @Override
         public void logOut(KeycloakSession s, RealmModel r, UserSessionModel us) {
             loggedOut.add(us.getId());
+            byUser.values().forEach(l -> l.removeIf(x -> x.getId().equals(us.getId())));
+        }
+
+        void mark(String username, java.time.Instant since) {
+            marks.put("u-" + username, new ImpersonatedStore.Mark("u-" + username, username, since.getEpochSecond()));
         }
 
         UserSessionModel add(String username, String sid, Map<String, String> notes) {
@@ -101,11 +129,12 @@ class ImpersonationExpiryTest {
         ImpersonationFile[] current = {file()};
         ImpersonationExpiry task = new ImpersonationExpiry(() -> current[0], () -> Imp.NOW, o);
         task.run(o.f.session);
+        assertEquals(Set.of("s-ended", "s-overdue"), o.loggedOut);
         o.loggedOut.clear();
         current[0] = ImpersonationFile.DENY;
         task.run(o.f.session);
-        // Fail closed: every impersonated session of the last good file's persons ends; alice's own stays.
-        assertEquals(Set.of("s-live", "s-ended", "s-overdue", "s-bob"), o.loggedOut);
+        // Fail closed: every impersonated session left of the last good file's persons ends; alice's own stays.
+        assertEquals(Set.of("s-live", "s-bob"), o.loggedOut);
         assertFalse(o.loggedOut.contains("s-own"));
 
         // Still unreadable on the next run: the same persons are walked again.
@@ -142,5 +171,61 @@ class ImpersonationExpiryTest {
         for (String l : lines) {
             assertFalse(l.contains(Imp.REASON), l);
         }
+    }
+
+    // ── The durable set (PORTCULLIS_IMPERSONATED): restarts, unreadable files, dropped records ──
+
+    /** Keycloak restarted while the file is unreadable: nothing in memory, the table still names alice. */
+    @Test
+    void restartWithDenyFileStillLogsOut() {
+        Ops o = sessions();
+        o.mark("alice", Imp.NOW.minusSeconds(600));
+        new ImpersonationExpiry(() -> ImpersonationFile.DENY, () -> Imp.NOW, o).run(o.f.session);
+        assertEquals(Set.of("s-live", "s-ended", "s-overdue"), o.loggedOut);
+        assertFalse(o.marks.containsKey("u-alice"), "no impersonated session left: the mark is removed");
+    }
+
+    /** The record dropped from a readable file (here: no records at all) — the mark still finds the session. */
+    @Test
+    void recordDroppedStillLogsOut() {
+        Ops o = sessions();
+        o.mark("alice", Imp.NOW.minusSeconds(600));
+        ImpersonationFile empty = Imp.file(true, List.of(), "portcullis-forward-auth");
+        new ImpersonationExpiry(() -> empty, () -> Imp.NOW, o).run(o.f.session);
+        assertEquals(Set.of("s-live", "s-ended", "s-overdue"), o.loggedOut);
+        assertTrue(o.marks.isEmpty());
+        assertFalse(o.loggedOut.contains("s-own"));
+    }
+
+    @Test
+    void markKeptWhileLive() {
+        Ops o = sessions();
+        o.mark("alice", Imp.NOW.minusSeconds(600));
+        ImpersonationFile f = file();
+        new ImpersonationExpiry(() -> f, () -> Imp.NOW, o).run(o.f.session);
+        assertFalse(o.loggedOut.contains("s-live"));
+        assertTrue(o.marks.containsKey("u-alice"), "a live impersonated session is left: the mark stays");
+    }
+
+    @Test
+    void markClearedOnlyWhenNothingLeftAndNotFresh() {
+        Ops o = new Ops();
+        o.f.person("u-alice", "alice");
+        o.mark("alice", Imp.NOW.minusSeconds(600));
+        o.mark("carol", Imp.NOW.minusSeconds(10)); // a start racing the task: its session may not be visible yet
+        new ImpersonationExpiry(() -> ImpersonationFile.DENY, () -> Imp.NOW, o).run(o.f.session);
+        assertEquals(Set.of("u-carol"), o.marks.keySet());
+
+        // A logout that fails keeps the mark (retried next run).
+        Ops failing = new Ops() {
+            @Override
+            public void logOut(KeycloakSession s, RealmModel r, UserSessionModel us) {
+                throw new IllegalStateException("boom");
+            }
+        };
+        failing.add("alice", "s-live", Imp.notes(failing.f, Imp.ID, Imp.NOW.plusSeconds(1800), "hwk"));
+        failing.mark("alice", Imp.NOW.minusSeconds(600));
+        new ImpersonationExpiry(() -> ImpersonationFile.DENY, () -> Imp.NOW, failing).run(failing.f.session);
+        assertTrue(failing.marks.containsKey("u-alice"));
     }
 }

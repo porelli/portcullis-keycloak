@@ -162,6 +162,7 @@ public final class PasskeyStore {
                 .setMaxResults(0)
                 .getResultList();
         em.find(SigninStateEntity.class, "");
+        em.find(ImpersonatedEntity.class, "");
     }
 
     /** The last {@code mds.serial} reclassification applied in a realm; -1 before the first. */

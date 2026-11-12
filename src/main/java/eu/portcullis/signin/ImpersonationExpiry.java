@@ -1,7 +1,9 @@
 package eu.portcullis.signin;
 
 import java.time.Instant;
+import eu.portcullis.signin.store.ImpersonatedStore;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -20,21 +22,29 @@ import org.keycloak.timer.ScheduledTask;
 /**
  * {@code portcullis-impersonation-expiry} (contract §8.1 "Ending", D41):
  * every 15 s, per realm, walks the user sessions (online and offline) of
- * every person {@code impersonation.json} names — or, while the file can't
- * be read, of the last good file's persons — and logs out
- * ({@code backchannelLogout}, which also tells apps that registered a
- * backchannel logout) every session whose {@code portcullis.imp.id} isn't
- * live: ended, past its {@code until}, switched off, unknown to the file,
- * or with partial notes. An unreadable file makes nothing live, so every
- * impersonated session of those persons ends (fail closed). A session of
- * the person's own (no note) is never touched. Logged with the id and the
- * person, never the reason.
+ * every person the extension recorded as signed in as
+ * ({@code PORTCULLIS_IMPERSONATED}, written at the start in the same
+ * transaction as the session: durable across restarts, shared by the
+ * cluster), plus every person {@code impersonation.json} names (pending
+ * included) — or, while the file can't be read, the last good file's — and
+ * logs out ({@code backchannelLogout}, which also tells apps that registered
+ * a backchannel logout) every session whose {@code portcullis.imp.id} isn't
+ * live: ended, past its {@code until}, switched off, dropped from or unknown
+ * to the file, or with partial notes. An unreadable file makes nothing live,
+ * so every impersonated session ends (fail closed). Refresh-token grants
+ * never pass the flows' guard: this task is what ends them. A session of the
+ * person's own (no note) is never touched. A record is removed once none of
+ * the person's sessions is impersonated and it is older than
+ * {@link #MARK_GRACE_S} (a start racing the task keeps it). Logged with the
+ * id and the person, never the reason.
  */
 public final class ImpersonationExpiry implements ScheduledTask {
     private static final Logger LOG = Logger.getLogger(ImpersonationExpiry.class);
 
     public static final String TASK_NAME = "portcullis-impersonation-expiry";
     public static final long INTERVAL_MS = 15_000;
+    /** A record younger than this is kept even with no impersonated session seen (its session may not be visible yet). */
+    static final long MARK_GRACE_S = 60;
 
     /** Keycloak's calls (a test gives its own). */
     interface Ops {
@@ -42,6 +52,15 @@ public final class ImpersonationExpiry implements ScheduledTask {
 
         /** The person's online and offline user sessions in the realm (empty when unknown). */
         List<UserSessionModel> sessions(KeycloakSession s, RealmModel r, String username);
+
+        /** The same by Keycloak's user id. */
+        List<UserSessionModel> sessionsOf(KeycloakSession s, RealmModel r, String userId);
+
+        /** The realm's {@code PORTCULLIS_IMPERSONATED} rows. */
+        List<ImpersonatedStore.Mark> marked(KeycloakSession s, RealmModel r);
+
+        /** Removes a row, unless a start refreshed it after since. */
+        void unmark(KeycloakSession s, RealmModel r, String userId, long since);
 
         /** Logs the session out. */
         void logOut(KeycloakSession s, RealmModel r, UserSessionModel us);
@@ -56,7 +75,16 @@ public final class ImpersonationExpiry implements ScheduledTask {
         @Override
         public List<UserSessionModel> sessions(KeycloakSession s, RealmModel r, String username) {
             s.getContext().setRealm(r);
-            UserModel u = s.users().getUserByUsername(r, username);
+            return of(s, r, s.users().getUserByUsername(r, username));
+        }
+
+        @Override
+        public List<UserSessionModel> sessionsOf(KeycloakSession s, RealmModel r, String userId) {
+            s.getContext().setRealm(r);
+            return of(s, r, s.users().getUserById(r, userId));
+        }
+
+        private List<UserSessionModel> of(KeycloakSession s, RealmModel r, UserModel u) {
             if (u == null) {
                 return List.of();
             }
@@ -64,11 +92,20 @@ public final class ImpersonationExpiry implements ScheduledTask {
         }
 
         @Override
+        public List<ImpersonatedStore.Mark> marked(KeycloakSession s, RealmModel r) {
+            return ImpersonatedStore.of(s).marked(r);
+        }
+
+        @Override
+        public void unmark(KeycloakSession s, RealmModel r, String userId, long since) {
+            ImpersonatedStore.of(s).unmark(userId, since);
+        }
+
+        @Override
         public void logOut(KeycloakSession s, RealmModel r, UserSessionModel us) {
             logOutAlone(s.getKeycloakSessionFactory(), r.getId(), us.getId(), us.isOffline());
         }
     };
-
     /**
      * Keycloak's backchannel logout of one session in its own transaction
      * (a failure never stops the others); when it fails — a background task
@@ -141,44 +178,76 @@ public final class ImpersonationExpiry implements ScheduledTask {
     public void run(KeycloakSession s) {
         ImpersonationFile f = file.get();
         Instant now = clock.get();
-        Set<String> targets;
+        Set<String> named;
         if (f == ImpersonationFile.DENY) {
-            targets = lastTargets; // unreadable: nothing is live, every impersonated session of these ends
+            named = lastTargets; // unreadable: nothing is live, every impersonated session ends
         } else {
-            targets = f.targets();
-            lastTargets = targets;
-        }
-        if (targets.isEmpty()) {
-            return;
+            named = f.targets();
+            lastTargets = named;
         }
         for (RealmModel realm : ops.realms(s)) {
-            for (String target : targets) {
-                List<UserSessionModel> sessions;
-                try {
-                    sessions = new ArrayList<>(ops.sessions(s, realm, target));
-                } catch (RuntimeException e) {
-                    LOG.warnf("portcullis: impersonation expiry: the sessions of %s in realm %s can't be read (%s); retried next run",
-                            target, realm.getName(), e.getClass().getSimpleName());
-                    continue;
-                }
-                for (UserSessionModel us : sessions) {
-                    Optional<Impersonation.Info> i = Impersonation.of(us);
-                    if (i.isEmpty()) {
-                        continue;
-                    }
-                    String person = us.getUser() == null ? null : us.getUser().getUsername();
-                    if (Impersonation.live(i.get(), person, f, now)) {
-                        continue;
-                    }
-                    try {
-                        ops.logOut(s, realm, us);
-                        LOG.infof("portcullis: impersonation %s ended: %s's session logged out", i.get().id(), person);
-                    } catch (RuntimeException e) {
-                        LOG.warnf("portcullis: impersonation %s: %s's session couldn't be logged out (%s); retried next run",
-                                i.get().id(), person, e.getClass().getSimpleName());
-                    }
-                }
+            try {
+                sweep(s, realm, f, now, named);
+            } catch (RuntimeException e) {
+                LOG.warnf("portcullis: impersonation expiry in realm %s failed (%s); retried next run", realm.getName(),
+                        e.getClass().getSimpleName());
             }
         }
+    }
+
+    /** One realm: the recorded people (by id), then the file's (by username); never an early return. */
+    private void sweep(KeycloakSession s, RealmModel realm, ImpersonationFile f, Instant now, Set<String> named) {
+        Set<String> done = new HashSet<>();
+        for (ImpersonatedStore.Mark m : ops.marked(s, realm)) {
+            int left = walk(s, realm, f, now, m.username(), () -> ops.sessionsOf(s, realm, m.userId()), done);
+            if (left == 0 && m.since() <= now.getEpochSecond() - MARK_GRACE_S) {
+                ops.unmark(s, realm, m.userId(), m.since());
+            }
+        }
+        for (String target : named) {
+            walk(s, realm, f, now, target, () -> ops.sessions(s, realm, target), done);
+        }
+    }
+
+    /**
+     * Logs out the person's non-live impersonated sessions; returns how many
+     * impersonated sessions are left (live ones, failed logouts, or -1 when
+     * the sessions can't be read).
+     */
+    private int walk(KeycloakSession s, RealmModel realm, ImpersonationFile f, Instant now, String who,
+            Supplier<List<UserSessionModel>> read, Set<String> done) {
+        List<UserSessionModel> sessions;
+        try {
+            sessions = new ArrayList<>(read.get());
+        } catch (RuntimeException e) {
+            LOG.warnf("portcullis: impersonation expiry: the sessions of %s in realm %s can't be read (%s); retried next run",
+                    who, realm.getName(), e.getClass().getSimpleName());
+            return -1;
+        }
+        int left = 0;
+        for (UserSessionModel us : sessions) {
+            Optional<Impersonation.Info> i = Impersonation.of(us);
+            if (i.isEmpty()) {
+                continue;
+            }
+            if (!done.add(us.getId())) {
+                left++; // seen in this run already (logged out, or live)
+                continue;
+            }
+            String person = us.getUser() == null ? null : us.getUser().getUsername();
+            if (Impersonation.live(i.get(), person, f, now)) {
+                left++;
+                continue;
+            }
+            try {
+                ops.logOut(s, realm, us);
+                LOG.infof("portcullis: impersonation %s ended: %s's session logged out", i.get().id(), person);
+            } catch (RuntimeException e) {
+                left++;
+                LOG.warnf("portcullis: impersonation %s: %s's session couldn't be logged out (%s); retried next run",
+                        i.get().id(), person, e.getClass().getSimpleName());
+            }
+        }
+        return left;
     }
 }
