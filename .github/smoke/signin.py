@@ -44,7 +44,11 @@ id's sessions record, ended null) and opens
 portcullis-impersonate/start?id= with root's cookies: a 302 to
 <auth>/oauth2/start?rd=<PORTCULLIS_PORTAL_URL>. An authorize for smoke then
 gives a token for alice with act.sub root, pc_imp.id the id and the amr of
-root's session plus hwk (the security_key touch); root's session is gone; a
+root's session plus hwk (the security_key touch); the introspection endpoint
+(a confidential client created at runtime with an audience mapper added to
+smoke so the token includes the introspection client, the secret in the form body)
+confirms the access token is active with act, pc_imp.id, pc_imp.until (int),
+exp <= until and exp <= created + 1800, and no reason; root's session is gone; a
 second start gets 403; a start bound to root's old session from the
 impersonated browser gets 403 with the banner; Keycloak's own impersonation
 answers an error (--features-disabled=impersonation); the IMPERSONATE event
@@ -157,6 +161,17 @@ def admin_token():
         "username": os.environ["KC_BOOTSTRAP_ADMIN_USERNAME"],
         "password": os.environ["KC_BOOTSTRAP_ADMIN_PASSWORD"]}, form=True)
     return tok["access_token"]
+
+
+def introspector(token):
+    """Create the introspection client at runtime: (client_id, secret)."""
+    secret = secrets.token_urlsafe(32)
+    base = f"{KC}/admin/realms/{REALM}/clients"
+    _, headers = http("POST", base, {
+        "clientId": "smoke-introspect", "publicClient": False,
+        "standardFlowEnabled": False, "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": False, "secret": secret}, token=token)
+    return "smoke-introspect", secret
 
 
 def create_person(token, password, required=("webauthn-register-passwordless",), username="alice"):
@@ -487,9 +502,16 @@ def claims_of(jwt):
     return json.loads(base64.urlsafe_b64decode(payload))
 
 
-def tokens_of(code, client=CLIENT):
+def token_response(code, client=CLIENT):
+    """The raw token answer (the whole JSON response)."""
     tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
         "grant_type": "authorization_code", "client_id": client, "code": code, "redirect_uri": REDIRECT}, form=True)
+    return tok
+
+
+def tokens_of(code, client=CLIENT):
+    """ID and access token claims."""
+    tok = token_response(code, client)
     return claims_of(tok["id_token"]), claims_of(tok["access_token"])
 
 
@@ -723,6 +745,15 @@ def impersonation_main():
         p1, s1 = records(imp_id, sid, now)
         write_impersonation([p1], [s1])
 
+        # Create the introspection client and add audience mapper before impersonation
+        # so the token will include smoke-introspect in its audience
+        client_id, client_secret = introspector(admin_token())
+        smoke_clients, _ = http("GET", f"{KC}/admin/realms/{REALM}/clients?clientId={CLIENT}", token=admin_token())
+        smoke_client_uuid = smoke_clients[0]["id"]
+        http("POST", f"{KC}/admin/realms/{REALM}/clients/{smoke_client_uuid}/protocol-mappers/models", {
+            "name": "introspect-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+            "config": {"included.client.audience": client_id, "access.token.claim": "true", "id.token.claim": "false"}}, token=admin_token())
+
         status, location, _ = open_start(page, start)
         want = f"{KC}/oauth2/start?rd=" + urllib.parse.quote(os.environ.get("PORTCULLIS_PORTAL_URL", "http://localhost:18081/portal/"), safe="")
         check(status == 302 and location == want, f"impersonation: start answers 302 to oauth2/start (got {status} {location!r})")
@@ -733,7 +764,9 @@ def impersonation_main():
         code = code_of(landed[-1]) if len(landed) > before else None
         check(code is not None, "impersonation: the authorize after the start signs in without a form")
         if code:
-            idt, access = tokens_of(code)
+            tok_resp = token_response(code)
+            idt, access = claims_of(tok_resp["id_token"]), claims_of(tok_resp["access_token"])
+            access_token = tok_resp["access_token"]
             for name, c in (("ID token", idt), ("access token", access)):
                 check(c.get("preferred_username") == "alice", f"impersonation: {name} preferred_username alice (got {c.get('preferred_username')!r})")
                 check(c.get("act") == {"sub": "root"}, f"impersonation: {name} act.sub root (got {c.get('act')!r})")
@@ -742,6 +775,20 @@ def impersonation_main():
                 check(IMP_REASON not in json.dumps(c), f"impersonation: {name} has no reason")
             amr = idt.get("amr", [])
             check(set(amr) == set(root_amr) | {"hwk"}, f"impersonation: amr = root's {root_amr} + hwk (got {amr})")
+
+            # Introspection of the impersonated access token (client and mapper created before the start)
+            intro_resp, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token/introspect", {
+                "token": access_token, "client_id": client_id, "client_secret": client_secret}, form=True)
+            check(intro_resp.get("active") is True, f"introspection: active is True (got {intro_resp.get('active')!r})")
+            check(intro_resp.get("act") == {"sub": "root"}, f"introspection: act == {{'sub': 'root'}} (got {intro_resp.get('act')!r})")
+            check(intro_resp.get("pc_imp", {}).get("id") == imp_id, f"introspection: pc_imp.id == imp_id (got {intro_resp.get('pc_imp', {}).get('id')!r})")
+            check(isinstance(intro_resp.get("pc_imp", {}).get("until"), int), f"introspection: pc_imp.until is int (got {intro_resp.get('pc_imp', {}).get('until')!r})")
+            exp = intro_resp.get("exp")
+            pc_imp_until = intro_resp.get("pc_imp", {}).get("until")
+            check(exp is not None and pc_imp_until is not None and exp <= pc_imp_until,
+                  f"introspection: exp <= pc_imp.until (exp {exp}, until {pc_imp_until})")
+            check(exp is not None and exp <= now + 1800, f"introspection: exp <= created + 1800 (exp {exp}, created {now})")
+            check(IMP_REASON not in json.dumps(intro_resp), "introspection: IMP_REASON not in the JSON")
         sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
         check(not sessions, f"impersonation: root's session is gone ({sessions})")
 
