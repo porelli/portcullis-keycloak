@@ -35,6 +35,11 @@ import org.junit.jupiter.api.Test;
  */
 class NeedsStrongerTemplateTest {
     static String render(NeedsStronger page) throws Exception {
+        return render(TemplateAuthenticator.PAGE, Map.of(TemplateAuthenticator.ATTRIBUTE, page));
+    }
+
+    /** The jar's template name rendered with these attributes (plus msg and properties). */
+    static String render(String name, Map<String, Object> attributes) throws Exception {
         Configuration cfg = new Configuration(Configuration.VERSION_2_3_32);
         cfg.setOutputFormat(HTMLOutputFormat.INSTANCE);
         cfg.setNewBuiltinClassResolver(TemplateClassResolver.ALLOWS_NOTHING_RESOLVER);
@@ -59,12 +64,11 @@ class NeedsStrongerTemplateTest {
             }
             return new MessageFormat(pattern, Locale.ENGLISH).format(params);
         };
-        Map<String, Object> model = new HashMap<>();
-        model.put(TemplateAuthenticator.ATTRIBUTE, page);
+        Map<String, Object> model = new HashMap<>(attributes);
         model.put("msg", msg);
         model.put("properties", Map.of("kcButtonPrimaryClass", "pf-primary", "kcButtonDefaultClass", "pf-default"));
         StringWriter out = new StringWriter();
-        cfg.getTemplate(TemplateAuthenticator.PAGE, "UTF-8").process(model, out);
+        cfg.getTemplate(name, "UTF-8").process(model, out);
         return out.toString();
     }
 
@@ -115,6 +119,22 @@ class NeedsStrongerTemplateTest {
         assertTrue(html.contains("or ask your admin"), html);
         assertFalse(html.toLowerCase(Locale.ROOT).contains("mtls"), html);
         assertFalse(html.toLowerCase(Locale.ROOT).contains("client certificate"), html);
+    }
+
+    /** F26: in an impersonated session the banner, every value escaped, with Stop. */
+    @Test
+    void bannerWhenImpersonated() throws Exception {
+        NeedsStronger page = NeedsStronger.of("Gitea", Set.of("security_key"), List.of(Set.of("yubikey_cert")), Set.of(), false,
+                "https://people.example.com/signin");
+        java.time.Instant now = java.time.Instant.parse("2026-11-12T14:10:00Z");
+        ImpersonationBanner banner = ImpersonationBanner.of(new Impersonation.Info(ImpersonationFileTest.ID, "root", "<b>x</b>",
+                now.plusSeconds(600)), "alice", "https://people.example.com/impersonation/stop", now);
+        String html = render(TemplateAuthenticator.PAGE, Map.of(TemplateAuthenticator.ATTRIBUTE, page, NeedsStronger.BANNER, banner))
+                .replaceAll("\\s+", " ");
+        assertTrue(html.contains("You are signed in as alice (by root) · reason “&lt;b&gt;x&lt;/b&gt;” · 10 min left"), html);
+        assertFalse(html.contains("<b>x</b>"), html);
+        assertTrue(html.contains("href=\"https://people.example.com/impersonation/stop\">Stop</a>"), html);
+        assertFalse(render(page).contains("You are signed in as"), "no banner outside an impersonation");
     }
 
     @Test

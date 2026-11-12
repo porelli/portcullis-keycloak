@@ -1,2 +1,3 @@
 eu.portcullis.signin.PasskeyRegisterFactory
 eu.portcullis.signin.PasskeyRegisterFactory$TwoFactor
+eu.portcullis.signin.ImpersonationNoticeFactory

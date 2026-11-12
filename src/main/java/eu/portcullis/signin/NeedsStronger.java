@@ -15,6 +15,15 @@ import java.util.Set;
  * through FreeMarker's HTML auto-escaping.
  */
 public final class NeedsStronger {
+    /**
+     * The form attribute of the impersonation banner ({@link ImpersonationBanner},
+     * D43): the template shows it whenever it is set. In practice an
+     * impersonated session never reaches this page — {@code portcullis-template}
+     * shows {@code portcullis-impersonating.ftl} mode {@code needs} instead —
+     * so the banner is the page's own guarantee.
+     */
+    public static final String BANNER = ImpersonationResource.BANNER;
+
     /** One alternative: its methods, and whether it needs a passkey kind the person hasn't set up. */
     public static final class Line {
         private final List<String> methods;

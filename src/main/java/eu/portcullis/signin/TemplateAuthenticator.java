@@ -1,6 +1,7 @@
 package eu.portcullis.signin;
 
 import jakarta.ws.rs.core.Response;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -68,6 +69,12 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * strongest by D1 strength while on when several ran — e.g. a password then
  * a step-up passkey; else {@code none}), as a client note: the only input of
  * {@code portcullis-fresh}.
+ *
+ * <p>In an impersonated session ({@link ImpersonationGuard}, checked first,
+ * D39 / D42) it never asks for a method: refused or ended, the impersonating
+ * page; allowed, the session's methods (the administrator's) are evaluated
+ * as always, and an unmet template shows {@code portcullis-impersonating.ftl}
+ * mode {@code needs} instead of the needs-stronger page.
  */
 public class TemplateAuthenticator implements Authenticator {
     private static final Logger LOG = Logger.getLogger(TemplateAuthenticator.class);
@@ -94,14 +101,25 @@ public class TemplateAuthenticator implements Authenticator {
 
     /** The environment (the process's; a test gives its own). */
     private final Function<String, String> env;
+    private final Supplier<ImpersonationFile> impersonations;
+    private final Supplier<Instant> clock;
+    private final ImpersonationGuard.Ops guardOps;
 
     public TemplateAuthenticator(Supplier<SigninConfig> config) {
         this(config, System::getenv);
     }
 
     TemplateAuthenticator(Supplier<SigninConfig> config, Function<String, String> env) {
+        this(config, env, ImpersonationFile::current, Instant::now, ImpersonationGuard.KEYCLOAK);
+    }
+
+    TemplateAuthenticator(Supplier<SigninConfig> config, Function<String, String> env, Supplier<ImpersonationFile> impersonations,
+            Supplier<Instant> clock, ImpersonationGuard.Ops guardOps) {
         this.config = config;
         this.env = env;
+        this.impersonations = impersonations;
+        this.clock = clock;
+        this.guardOps = guardOps;
     }
 
     @Override
@@ -111,6 +129,13 @@ public class TemplateAuthenticator implements Authenticator {
         ClientModel client = authSession.getClient();
         String clientId = client == null ? null : client.getClientId();
         authSession.setClientNote(FreshMapper.NOTE, freshMethod(authSession, cfg));
+        Instant now = clock.get();
+        ImpersonationGuard.Result guard = ImpersonationGuard.check(context, impersonations, now, guardOps, ImpersonationGuard.Stage.TEMPLATE);
+        if (guard.verdict() == ImpersonationGuard.Verdict.REFUSE || guard.verdict() == ImpersonationGuard.Verdict.ENDED) {
+            ImpersonationGuard.answer(context, guard, env, now, guardOps, ImpersonationGuard.Stage.TEMPLATE);
+            return;
+        }
+        boolean impersonated = guard.verdict() == ImpersonationGuard.Verdict.ALLOW;
         UserModel user = context.getUser();
         String stepUser = authSession.getAuthNote(USER_NOTE);
         if (stepUser != null && (user == null || !stepUser.equals(user.getId()))) {
@@ -140,6 +165,19 @@ public class TemplateAuthenticator implements Authenticator {
             succeed(context, have, cfg);
             return;
         }
+        if (impersonated) {
+            // D39: never a step, never a certificate completion: the administrator's sign-in didn't meet it.
+            LOG.infof("portcullis: impersonation %s: %s doesn't meet the sign-in template of %s", guard.info().id(), guard.person(), clientId);
+            String stop = Impersonation.stopUrl(env);
+            ImpersonatingPage page = ImpersonatingPage.needs(cfg.clientName(clientId).orElse(clientId), missing(rule, have),
+                    guard.info().admin(), guard.person(), stop);
+            ImpersonationBanner banner = ImpersonationBanner.of(guard.info(), guard.person(), stop, now);
+            if (banner != null) {
+                context.form().setAttribute(ImpersonationResource.BANNER, banner);
+            }
+            context.forceChallenge(context.form().setAttribute(ImpersonationResource.ATTRIBUTE, page).createForm(ImpersonationResource.PAGE));
+            return;
+        }
         Set<String> setUp = setUp(user, cfg);
         Set<String> asked = asked(authSession);
         Predicate<String> completable = m -> switch (m) {
@@ -159,6 +197,25 @@ public class TemplateAuthenticator implements Authenticator {
                 setUp, cfg.addStronger(), signinPage(context, env));
         Response response = context.form().setAttribute(ATTRIBUTE, page).createForm(PAGE);
         context.forceChallenge(response);
+    }
+
+    /** The methods of the rule's alternatives the session lacks, in the method table's order. */
+    static List<String> missing(Rule rule, Set<String> have) {
+        Set<String> all = new HashSet<>();
+        for (Set<String> alt : rule.alternatives()) {
+            for (String m : alt) {
+                if (!have.contains(m)) {
+                    all.add(m);
+                }
+            }
+        }
+        List<String> out = new ArrayList<>();
+        for (String m : Methods.IDS) {
+            if (all.contains(m)) {
+                out.add(m);
+            }
+        }
+        return out;
     }
 
     /**

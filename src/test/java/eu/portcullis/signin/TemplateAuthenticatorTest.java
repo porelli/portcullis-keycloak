@@ -337,4 +337,108 @@ class TemplateAuthenticatorTest {
             assertEquals(account, ((NeedsStronger) unset.formAttributes.get(TemplateAuthenticator.ATTRIBUTE)).getSigninUrl());
         }
     }
+
+    // ── Impersonated sessions (D39, D42) ──
+
+    /** The check with alice's impersonated identity cookie and the file. */
+    private static TemplateAuthenticator impersonated(SigninConfig cfg, Imp.Ops ops, ImpersonationFile file) {
+        return new TemplateAuthenticator(() -> cfg, k -> "https://people.example.com/signin", () -> file, () -> Imp.NOW, ops) {
+            @Override
+            protected boolean certificateIsTheirs(AuthenticationFlowContext context, org.keycloak.models.UserModel user, String method) {
+                return true; // even a certificate that would complete a step: never asked
+            }
+        };
+    }
+
+    /** alice's SSO reuse of her impersonated session (root's methods amrs) for nextcloud. */
+    private static Flow aliceSso(Imp.Ops[] ops, String... amrs) {
+        Flow f = new Flow();
+        Flow.Person alice = f.person("u-alice", "alice").passkey(PasskeyClassifier.TYPE_SECURITY_KEY, Flow.bytes("k"));
+        ops[0] = new Imp.Ops(Imp.alice(f, alice, amrs));
+        f.user = alice.model;
+        f.completed(amrs);
+        f.authNotes.put(CookieAuthenticator.SSO_NOTE, "true");
+        return f;
+    }
+
+    @Test
+    void impersonatedNeverAsks() {
+        Imp.Ops[] ops = new Imp.Ops[1];
+        Flow f = aliceSso(ops, "hwk");
+        SigninConfig cfg = Configs.client(Configs.DEFAULT_METHODS, true, "{\"op\": \"all\", \"items\": [\"yubikey_cert\"]}");
+        impersonated(cfg, ops[0], ImpersonationGuardTest.LIVE).authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        assertEquals(null, f.resetListener, "no step, no certificate completion");
+        assertEquals(ImpersonationResource.PAGE, f.page);
+        ImpersonatingPage page = (ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
+        assertEquals(ImpersonatingPage.NEEDS, page.getMode());
+        assertEquals("Nextcloud", page.getApp());
+        assertEquals(List.of("yubikey_cert"), page.getMethods());
+        assertEquals("root", page.getAdmin());
+        assertEquals("alice", page.getPerson());
+        assertEquals("https://people.example.com/impersonation/stop", page.getStopUrl());
+        assertNotNull(f.formAttributes.get(ImpersonationResource.BANNER));
+        assertEquals(TemplateAuthenticator.NONE, f.clientNotes.get(FreshMapper.NOTE), "never a fresh sign-in");
+    }
+
+    @Test
+    void impersonatedPromptLoginRefused() {
+        // prompt=login: auth-cookie skipped (no SSO note), root typed a password on top of alice's impersonated cookie.
+        Imp.Ops[] ops = new Imp.Ops[1];
+        Flow f = aliceSso(ops, "hwk");
+        f.authNotes.remove(CookieAuthenticator.SSO_NOTE);
+        f.clientNotes.put("prompt", "login");
+        f.user = f.person("u-root", "root").model;
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        f.completed("pwd");
+        impersonated(Configs.client(Configs.WITH_PASSWORD, false, Configs.STRONG), ops[0], ImpersonationGuardTest.LIVE)
+                .authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, "nothing issued");
+        assertEquals(ImpersonatingPage.REFUSED, ((ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+        assertFalse(f.eventDetails().containsKey(History.KIND), "no LOGIN details");
+    }
+
+    @Test
+    void impersonatedMetSucceedsWithAct() {
+        Imp.Ops[] ops = new Imp.Ops[1];
+        Flow f = aliceSso(ops, "hwk");
+        impersonated(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), ops[0], ImpersonationGuardTest.LIVE)
+                .authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("sso", f.eventDetails().get(History.KIND));
+        assertEquals("root", f.eventDetails().get(History.ACT));
+        assertFalse(f.eventDetails().toString().contains(Imp.REASON));
+
+        // An unlisted (gateway) client, listed in the file: success too.
+        Flow g = aliceSso(ops, "hwk");
+        g.clientId = "portcullis-forward-auth";
+        impersonated(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), ops[0], ImpersonationGuardTest.LIVE)
+                .authenticate(g.context);
+        assertEquals(FlowStatus.SUCCESS, g.status);
+    }
+
+    @Test
+    void otherRequiredActionRefused() {
+        Imp.Ops[] ops = new Imp.Ops[1];
+        Flow f = aliceSso(ops, "hwk");
+        f.people().get(0).fake.on("getRequiredActionsStream", a -> java.util.stream.Stream.of("UPDATE_PASSWORD"));
+        impersonated(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), ops[0], ImpersonationGuardTest.LIVE)
+                .authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        assertEquals(ImpersonatingPage.REFUSED, ((ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+    }
+
+    @Test
+    void impersonatedEndedLoggedOut() {
+        Imp.Ops[] ops = new Imp.Ops[1];
+        Flow f = aliceSso(ops, "hwk");
+        impersonated(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), ops[0], ImpersonationFile.DENY)
+                .authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        ImpersonatingPage ended = (ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
+        assertEquals(ImpersonatingPage.ENDED, ended.getMode());
+        assertEquals(f.requestUri.toString(), ended.getSignInAgainUrl());
+        assertEquals(null, ended.getStopUrl());
+        assertEquals(List.of(f.rootId), ops[0].loggedOut);
+    }
 }

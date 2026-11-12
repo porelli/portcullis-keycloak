@@ -157,7 +157,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template"
+      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry portcullis-impersonation-notice"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -231,7 +231,10 @@ jobs:
           order=$(jq -r '.providers["authenticator"].providers["auth-cookie"].order // 0' "$work/serverinfo.json")
           if [ "$marker" = pc-method ] && [ "$order" = 1 ]; then echo "ok  auth-cookie is the Portcullis override"; else echo "::error::authenticator auth-cookie isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
           # portcullis-fresh is a protocol mapper (Keycloak lists it under protocol-mapper).
-          if jq -e '.providers["protocol-mapper"].providers["portcullis-fresh"]' "$work/serverinfo.json" >/dev/null; then echo "ok  portcullis-fresh is a protocol mapper"; else echo "::error::portcullis-fresh isn't listed as a protocol mapper"; missing=1; fi
+          for id in portcullis-fresh portcullis-impersonation; do
+            if jq -e --arg id "$id" '.providers["protocol-mapper"].providers[$id]' "$work/serverinfo.json" >/dev/null; then echo "ok  $id is a protocol mapper"; else echo "::error::$id isn't listed as a protocol mapper"; missing=1; fi
+          done
+          if jq -e '.providers["realm-restapi-extension"].providers["portcullis-impersonate"]' "$work/serverinfo.json" >/dev/null; then echo "ok  portcullis-impersonate is a realm resource"; else echo "::error::portcullis-impersonate isn't listed as a realm resource"; missing=1; fi
           if docker logs kc-smoke 2>&1 | grep -iE 'portcullis.*(ERROR|Exception)|(ERROR|Exception).*portcullis'; then
             echo "::error::Keycloak logged an error naming portcullis"
             missing=1
@@ -272,6 +275,31 @@ jobs:
           IMAGE: portcullis-keycloak:smoke
           PYTHON: /tmp/smoke-venv/bin/python
         run: bash .github/smoke/run.sh x509
+
+      # Signing in as someone else (contract §8.1 "Impersonation"): Keycloak
+      # with --features-disabled=impersonation (as core); the admin API
+      # makes lldap_admin, root (in it) and alice; root signs in with a
+      # password; impersonation.json bound to root's session; the start with
+      # root's cookies (302 to oauth2/start); the token for smoke is alice's
+      # with act.sub root, pc_imp.id and root's amr + hwk; root's session
+      # gone; a second start 403; the guard (an unlisted client, pc_method,
+      # prompt=login, max_age, acr refused; an ended record → the session
+      # logged out, the authorize again: the sign-in page, root signs in
+      # again as root); the expiry task, three phases (ended in
+      # the file, record dropped, restart with an unreadable file): alice's
+      # session logged out within 60 s, tokens' exp clamped to until, the held
+      # refresh token then invalid_grant; the notice (ignored and kept in an
+      # impersonated session; alice's own sign-in shows the escaped line,
+      # Continue → a LOGIN with pc_kind sign_in; silent once seen; the
+      # generic text on an unreadable file; only a later notice's line); the
+      # enabled required actions exactly the smoke realm's; Keycloak's own impersonation refused; the
+      # IMPERSONATE event with pc_imp / pc_act; no portcullis ERROR and never
+      # the reason in the log.
+      - name: impersonation
+        env:
+          IMAGE: portcullis-keycloak:smoke
+          PYTHON: /tmp/smoke-venv/bin/python
+        run: bash .github/smoke/run.sh impersonation
 
       # Both platforms, never pushed: every run checks the arm64 image
       # builds. Main's publishing runs write the layer cache (mode=max:

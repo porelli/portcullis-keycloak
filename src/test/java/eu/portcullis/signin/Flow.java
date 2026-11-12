@@ -85,10 +85,23 @@ final class Flow {
     UserSessionModel attached;
     AuthenticatorConfigModel authenticatorConfig;
     String clientId = "nextcloud";
+    /** This request's URI (default: the authorize endpoint with its query). */
+    URI requestUri = BASE.resolve("realms/portcullis/protocol/openid-connect/auth?client_id=nextcloud&state=s1");
+    /** The authentication selections were cleared (no "Try another way"). */
+    boolean selectionsCleared;
     boolean bruteForceProtected = true;
+
+    /** The root authentication session's id (Keycloak: the user session's id, AuthenticationSessionManager.getUserSession). */
+    String rootId = "root-1";
+    /** The user sessions Keycloak knows, by id (session.sessions().getUserSession). */
+    final Map<String, UserSessionModel> userSessions = new HashMap<>();
 
     final RealmModel realm;
     final KeycloakSession session;
+    /** The stand-ins behind realm, session and the session's context: a test adds answers. */
+    final Fake realmFake;
+    final Fake sessionFake;
+    final Fake contextFake;
     final AuthenticationSessionModel authSession;
     final LoginFormsProvider forms;
     final AuthenticationFlowContext context;
@@ -97,7 +110,7 @@ final class Flow {
 
     Flow() {
         WebAuthnMetadataService.setDefaultMetadata(Map.of());
-        realm = Fake.named("realm")
+        realmFake = Fake.named("realm")
                 .ret("getId", "realm-1")
                 .ret("getName", REALM)
                 .on("getAuthenticationExecutionById", a -> executions.get((String) a[0]))
@@ -106,7 +119,12 @@ final class Flow {
                 .on("isBruteForceProtected", a -> bruteForceProtected)
                 .on("isLoginWithEmailAllowed", a -> !emails.isEmpty())
                 .on("getWebAuthnPolicyPasswordless", a -> new WebAuthnPolicy())
-                .as(RealmModel.class);
+                .on("getAuthenticationFlowsStream", a -> flows.keySet().stream().sorted().map(id -> {
+                    AuthenticationFlowModel m = new AuthenticationFlowModel();
+                    m.setId(id);
+                    return m;
+                }));
+        realm = realmFake.as(RealmModel.class);
         ClientModel client = Fake.named("client").on("getClientId", a -> clientId).as(ClientModel.class);
         authSession = Fake.named("authSession")
                 .on("getAuthNote", a -> authNotes.get((String) a[0]))
@@ -121,6 +139,8 @@ final class Flow {
                 .on("setAuthenticatedUser", a -> user = (UserModel) a[0])
                 .on("getClient", a -> client)
                 .on("getRealm", a -> realm)
+                .on("getParentSession", a -> Fake.named("root auth session").ret("getId", rootId)
+                        .as(org.keycloak.sessions.RootAuthenticationSessionModel.class))
                 .ret("getProtocol", "openid-connect")
                 .as(AuthenticationSessionModel.class);
         UserProvider userProvider = Fake.named("users")
@@ -128,11 +148,14 @@ final class Flow {
                 .on("getUserByEmail", a -> emails.get((String) a[1]))
                 .on("getUserById", a -> users.values().stream().filter(u -> u.getId().equals(a[1])).findFirst().orElse(null))
                 .as(UserProvider.class);
-        KeycloakContext keycloakContext = Fake.named("context")
+        contextFake = Fake.named("context")
                 .ret("resolveLocale", Locale.ENGLISH)
                 .on("getAuthenticationSession", a -> authSession)
-                .on("getRealm", a -> realm)
-                .as(KeycloakContext.class);
+                .on("getRealm", a -> realm);
+        KeycloakContext keycloakContext = contextFake.as(KeycloakContext.class);
+        org.keycloak.models.UserSessionProvider sessions = Fake.named("user sessions")
+                .on("getUserSession", a -> userSessions.get((String) a[1]))
+                .as(org.keycloak.models.UserSessionProvider.class);
         KeycloakSessionFactory factory = Fake.named("factory").as(KeycloakSessionFactory.class);
         PasswordHashProvider hash = Fake.named("hash").as(PasswordHashProvider.class);
         Map<Class<?>, Object> providers = new HashMap<>();
@@ -140,8 +163,11 @@ final class Flow {
         providers.put(org.keycloak.services.x509.X509ClientCertificateLookup.class,
                 Fake.named("x509 lookup").on("getCertificateChain", a -> certificates)
                         .as(org.keycloak.services.x509.X509ClientCertificateLookup.class));
-        Fake sessionFake = Fake.named("session")
+        // No identity cookie: AuthenticationManager.authenticateIdentityCookie answers null (not signed in).
+        providers.put(org.keycloak.cookie.CookieProvider.class, Fake.named("cookies").as(org.keycloak.cookie.CookieProvider.class));
+        sessionFake = Fake.named("session")
                 .ret("users", userProvider)
+                .ret("sessions", sessions)
                 .ret("getContext", keycloakContext)
                 .ret("getKeycloakSessionFactory", factory)
                 .ret("getAttributes", new HashMap<>())
@@ -186,6 +212,7 @@ final class Flow {
                 .as(LoginFormsProvider.class);
         // Fluent setters must return the provider: Fake answers null above, so wrap.
         LoginFormsProvider fluentForms = fluent(forms);
+        providers.put(LoginFormsProvider.class, fluentForms);
         event = new EventBuilder(realm, session) {
             @Override
             public void error(String e) {
@@ -203,7 +230,7 @@ final class Flow {
                 .as(jakarta.ws.rs.core.HttpHeaders.class);
         HttpRequest http = Fake.named("http").on("getDecodedFormParameters", a -> form)
                 .ret("getHttpHeaders", httpHeaders).as(HttpRequest.class);
-        UriInfo uri = Fake.named("uri").ret("getBaseUri", BASE).as(UriInfo.class);
+        UriInfo uri = Fake.named("uri").ret("getBaseUri", BASE).on("getRequestUri", a -> requestUri).as(UriInfo.class);
         AuthenticationExecutionModel execution = new AuthenticationExecutionModel();
         execution.setId("exec-current");
         AuthenticationFlowModel top = new AuthenticationFlowModel();
@@ -259,6 +286,7 @@ final class Flow {
                     List<org.keycloak.authentication.AuthenticationSelectionOption> l =
                             (List<org.keycloak.authentication.AuthenticationSelectionOption>) a[0];
                     selections = l;
+                    selectionsCleared = l != null && l.isEmpty();
                     return null;
                 })
                 .on("getStatus", a -> status)
@@ -297,6 +325,8 @@ final class Flow {
         final List<CredentialInput> checked = new ArrayList<>();
         Predicate<CredentialInput> passkeyValid = i -> true;
         final UserModel model;
+        /** The stand-in behind model: a test adds answers (groups, required actions, …). */
+        final Fake fake;
 
         Person(String id, String username) {
             this.id = id;
@@ -319,12 +349,12 @@ final class Flow {
                         return true;
                     })
                     .as(SubjectCredentialManager.class);
-            model = Fake.named("user " + username)
+            fake = Fake.named("user " + username)
                     .ret("getId", id)
                     .ret("getUsername", username)
                     .ret("isEnabled", true)
-                    .ret("credentialManager", manager)
-                    .as(UserModel.class);
+                    .ret("credentialManager", manager);
+            model = fake.as(UserModel.class);
         }
 
         /** A stored passkey of credential type t with this credential id. */

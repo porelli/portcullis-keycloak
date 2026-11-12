@@ -48,7 +48,8 @@
   "eventsExpiration": 31536000,
   "enabledEventTypes": [
     "LOGIN",
-    "LOGIN_ERROR"
+    "LOGIN_ERROR",
+    "IMPERSONATE"
   ],
   "attributes": {
     "acr.loa.map": "{}"
@@ -503,6 +504,15 @@
       "enabled": true,
       "defaultAction": false,
       "priority": 80
+    },
+    {
+      "alias": "portcullis-impersonation-notice",
+      "name": "Impersonation notice",
+      "providerId": "portcullis-impersonation-notice",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 90,
+      "config": {}
     }
   ],
   "roles": {
@@ -545,6 +555,18 @@
             "access.token.claim": "true",
             "introspection.token.claim": "true"
           }
+        },
+        {
+          "name": "impersonation",
+          "protocol": "openid-connect",
+          "protocolMapper": "portcullis-impersonation",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
         }
       ]
     },
@@ -574,6 +596,18 @@
             "id.token.claim": "true",
             "access.token.claim": "false",
             "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "impersonation",
+          "protocol": "openid-connect",
+          "protocolMapper": "portcullis-impersonation",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
           }
         }
       ]

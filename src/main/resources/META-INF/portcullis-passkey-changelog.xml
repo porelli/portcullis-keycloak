@@ -3,7 +3,8 @@
   The Portcullis sign-in extension's tables (contract §8.1 portcullis-passkey-store,
   plan D5). Keycloak runs this changelog through the JpaEntityProvider
   portcullis-passkey-store. No migration changesets: there are no installs to
-  upgrade from.
+  upgrade from. Never edit a deployed changeSet (portcullis-passkey-1 is
+  deployed): one new changeSet per release, edited freely until it is deployed.
 -->
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -63,6 +64,39 @@
                 <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_SIGNIN_STATE"/>
             </column>
             <column name="LAST_MDS_SERIAL" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <!-- Sign-in part 3's changeSet (contract §8.1 "Impersonation"): every part-3 table goes here until it deploys.
+         PORTCULLIS_IMPERSONATED: the people signed in as, until none of their sessions is impersonated ("Ending").
+         PORTCULLIS_IMP_NOTICE_SEEN: per person, the latest impersonation end their notice showed ("The notice"). -->
+    <changeSet author="portcullis" id="portcullis-impersonation-1">
+        <createTable tableName="PORTCULLIS_IMPERSONATED">
+            <column name="USER_ID" type="VARCHAR(255)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_IMPERSONATED"/>
+            </column>
+            <column name="REALM_ID" type="VARCHAR(36)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="USERNAME" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <!-- epoch seconds of the latest start -->
+            <column name="SINCE" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex tableName="PORTCULLIS_IMPERSONATED" indexName="IDX_PORTCULLIS_IMPERSONATED_REALM">
+            <column name="REALM_ID"/>
+        </createIndex>
+        <createTable tableName="PORTCULLIS_IMP_NOTICE_SEEN">
+            <column name="USER_ID" type="VARCHAR(255)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_IMP_NOTICE_SEEN"/>
+            </column>
+            <!-- epoch milliseconds of the latest ended shown -->
+            <column name="SEEN_UNTIL" type="BIGINT">
                 <constraints nullable="false"/>
             </column>
         </createTable>

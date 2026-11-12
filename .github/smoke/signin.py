@@ -34,6 +34,38 @@ kind still does, as mtls / file; the LOGIN events carry
 the history details (pc_kind, pc_methods, pc_session, pc_ua); and Keycloak
 logs no error naming portcullis. The CRLs are served on 0.0.0.0:8200 (the
 container reaches the host as vault).
+
+`signin.py impersonation` is the smoke step "impersonation" (contract §8.1
+"Impersonation"): the admin API creates the group lldap_admin, root (in it)
+and alice; root signs in with a password (pc_method=password); the script
+writes impersonation.json (allowed, written now, clients with the smoke
+client, a pending record bound to root's Keycloak session id and the same
+id's sessions record, ended null) and opens
+portcullis-impersonate/start?id= with root's cookies: a 302 to
+<auth>/oauth2/start?rd=<PORTCULLIS_PORTAL_URL>. An authorize for smoke then
+gives a token for alice with act.sub root, pc_imp.id the id and the amr of
+root's session plus hwk (the security_key touch); root's session is gone; a
+second start gets 403; a start bound to root's old session from the
+impersonated browser gets 403 with the banner; Keycloak's own impersonation
+answers an error (--features-disabled=impersonation); the IMPERSONATE event
+has pc_imp and pc_act and no reason, the LOGIN as alice pc_act root. The
+guard (D42): in the impersonated browser an authorize for smoke-fresh (not in
+the file's clients), with pc_method, prompt=login, max_age=0 or acr_values
+gets the refused page (403, banner) and nothing is issued, while smoke still
+signs in; with the record gone from the file (as after Stop) the next
+authorize logs alice's session out at once and starts again without it: the
+normal sign-in page (never the ended page), where root signs in again as
+root. The expiry task: a
+second and a third impersonation, each left alone while live (one 15 s run),
+then the record ended in the file, the record dropped from a readable file
+(only the extension's PORTCULLIS_IMPERSONATED still names alice), or
+Keycloak restarted while the file is unreadable (nothing in memory) —
+alice's session is logged out by the task within 60 s with no browser
+involved; each phase's app (smoke) holds tokens whose exp is clamped to
+until, its refresh while live stays within until, and its refresh after
+the logout gets invalid_grant. The realm's enabled required actions are
+exactly the smoke realm's. The
+log has no error naming portcullis and never the reason.
 """
 
 import base64
@@ -127,10 +159,10 @@ def admin_token():
     return tok["access_token"]
 
 
-def create_person(token, password, required=("webauthn-register-passwordless",)):
+def create_person(token, password, required=("webauthn-register-passwordless",), username="alice"):
     base = f"{KC}/admin/realms/{REALM}/users"
     _, headers = http("POST", base, {
-        "username": "alice", "email": "alice@example.com", "firstName": "Alice", "lastName": "Smoke",
+        "username": username, "email": f"{username}@example.com", "firstName": username.title(), "lastName": "Smoke",
         "enabled": True, "emailVerified": True,
         "requiredActions": list(required)}, token=token)
     uid = headers["Location"].rsplit("/", 1)[1]
@@ -440,8 +472,471 @@ def x509_main():
     sys.exit(1 if failures else 0)
 
 
+# ── Impersonation ──
+
+IMP_REASON = "smoke reason 7f3a"  # must never reach a token, an event or Keycloak's log
+
+
+def rfc3339(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def claims_of(jwt):
+    payload = jwt.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def tokens_of(code, client=CLIENT):
+    tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+        "grant_type": "authorization_code", "client_id": client, "code": code, "redirect_uri": REDIRECT}, form=True)
+    return claims_of(tok["id_token"]), claims_of(tok["access_token"])
+
+
+def write_impersonation(pending, sessions, notices=None):
+    doc = {"version": 1, "allowed": True, "written": rfc3339(time.time()),
+           "clients": ["portcullis-forward-auth", CLIENT], "pending": pending, "sessions": sessions, "notices": notices or {}}
+    path = os.path.join(HUB_DATA, "impersonation.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+    time.sleep(2)  # a bind mount's cached attributes (Docker Desktop)
+
+
+def records(imp_id, sid, created, life=1800):
+    p = {"id": imp_id, "admin": "root", "admin_sid": sid, "target": "alice", "reason": IMP_REASON,
+         "fresh": "security_key", "fresh_at": rfc3339(created - 5), "created": rfc3339(created), "until": rfc3339(created + life)}
+    s = {"id": imp_id, "admin": "root", "target": "alice", "reason": IMP_REASON,
+         "started": rfc3339(created), "until": rfc3339(created + life), "ended": None}
+    return p, s
+
+
+def open_start(page, url):
+    """The browser opens a start URL: the start's own answer (status, Location, body), redirects not followed into."""
+    final = page.goto(url)
+    req = final.request
+    while req.redirected_from is not None:
+        req = req.redirected_from
+    first = req.response()
+    body = first.text() if first.status != 302 else ""
+    return first.status, first.headers.get("location", ""), body
+
+
+NOTICE_REASON = "<b>notice</b> reason 3c9e"  # escaped on the page; never in Keycloak's log
+NOTICE = "portcullis-impersonation-notice"
+
+
+def notice_record(started, minutes, reason=NOTICE_REASON, apps=None):
+    return {"id": secrets.token_hex(16), "admin": "root", "started": rfc3339(started), "ended": rfc3339(started + minutes * 60),
+            "reason": reason, "apps": apps if apps is not None else
+            [{"name": "Gitea", "own_session": False}, {"name": "Nextcloud", "own_session": True}]}
+
+
+def notice_line(rec, minutes):
+    """ImpersonationNotice.line, contract §8.1 "The notice"."""
+    tm = time.strptime(rec["started"], "%Y-%m-%dT%H:%M:%SZ")
+    apps = rec["apps"]
+    out = (f"{rec['admin']} signed in as you on {tm.tm_mday} {time.strftime('%b %Y %H:%M', tm)} UTC for {minutes} min: "
+           f"{rec['reason']}. Apps opened: " + (", ".join(a["name"] for a in apps) + "." if apps else "none."))
+    for a in apps:
+        if a["own_session"]:
+            out += f" {a['name']} keeps its own session and may have stayed signed in longer."
+    return out
+
+
+def require_notice(base, uid):
+    u, _ = http("GET", f"{base}/users/{uid}", token=admin_token())
+    u["requiredActions"] = [NOTICE]
+    http("PUT", f"{base}/users/{uid}", u, token=admin_token())
+
+
+def required_actions(base, uid):
+    u, _ = http("GET", f"{base}/users/{uid}", token=admin_token())
+    return u.get("requiredActions") or []
+
+
+def password_sign_in(pg, username, password):
+    pg.goto(authorize_url(pc_method="password"))
+    pg.wait_for_load_state("domcontentloaded")
+    pg.fill("#username", username)
+    pg.fill("#password", password)
+    pg.locator("#kc-login").click()
+
+
+def latest_login(token, uid, since_ms):
+    hits = [e for e in login_events(token, uid) if e.get("time", 0) >= since_ms]
+    return max(hits, key=lambda e: e["time"]).get("details", {}) if hits else None
+
+
+def notice_phase(p, base, root, root_password, alice):
+    """D45 / F12: the person's notice at their own next sign-in; never in an impersonated session."""
+    alice_password = secrets.token_urlsafe(18)
+    http("PUT", f"{base}/users/{alice}/reset-password", {"type": "password", "value": alice_password, "temporary": False},
+         token=admin_token())
+    first = notice_record(int(time.time()) - 3600, 26)
+    notices = {"alice": [first]}
+
+    # In an impersonated session the action is ignored: root's browser signs in as alice without the notice, and it stays.
+    b = p.chromium.launch()
+    pg = b.new_context().new_page()
+    password_sign_in(pg, "root", root_password)
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+    imp_id = secrets.token_hex(16)
+    pn, sn = records(imp_id, newest_session(mine), int(time.time()))
+    write_impersonation([pn], [sn], notices)
+    require_notice(base, alice)
+    status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={imp_id}")
+    check(status == 302, f"notice: an impersonation started (got {status})")
+    before = len(landed)
+    pg.goto(authorize_url())
+    pg.wait_for_load_state("domcontentloaded")
+    check(len(landed) > before and pg.locator("#portcullis-impersonation-notice").count() == 0,
+          "notice: an impersonated session signs in without the notice")
+    check(required_actions(base, alice) == [NOTICE], f"notice: the action is kept for alice ({required_actions(base, alice)})")
+    b.close()
+    write_impersonation([], [dict(sn, ended=rfc3339(time.time()))], notices)
+
+    def own_sign_in(what):
+        b = p.chromium.launch()
+        pg = b.new_context().new_page()
+        mark = int(time.time() * 1000) - 1000
+        before = len(landed)
+        password_sign_in(pg, "alice", alice_password)
+        try:
+            pg.wait_for_selector("#portcullis-impersonation-notice", timeout=15000)
+        except Exception:
+            pass
+        return b, pg, mark, before
+
+    def after_login(what, mark):
+        d = latest_login(admin_token(), alice, mark)
+        got = {k: (d or {}).get(k) for k in ("pc_kind", "pc_methods")}
+        check(got == {"pc_kind": "sign_in", "pc_methods": "password"},
+              f"notice: {what}: the LOGIN keeps its history details (F12) (got {d})")
+
+    # alice's own sign-in: the line, escaped; Continue reaches the client.
+    b, pg, mark, before = own_sign_in("first")
+    lines = pg.locator(".portcullis-notice-line").all_inner_texts()
+    want = notice_line(first, 26)
+    check([l.strip() for l in lines] == [want], f"notice: alice's sign-in shows the line {want!r} (got {lines})")
+    html = pg.content()
+    check("&lt;b&gt;notice&lt;/b&gt;" in html and "<b>notice</b>" not in html, "notice: the reason is escaped")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before and code_of(landed[-1]) is not None, "notice: Continue reaches the client")
+    check(required_actions(base, alice) == [], f"notice: Continue completes the action ({required_actions(base, alice)})")
+    after_login("Continue", mark)
+    b.close()
+
+    # Seen: the action added again → it completes silently, no page.
+    require_notice(base, alice)
+    b, pg, mark, before = own_sign_in("seen")
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before and pg.locator("#portcullis-impersonation-notice").count() == 0,
+          "notice: a second sign-in shows no notice")
+    check(required_actions(base, alice) == [], "notice: the silent completion removes the action")
+    after_login("silent", mark)
+    b.close()
+
+    # An unreadable file: the generic text, Continue completes (the seen time unchanged).
+    require_notice(base, alice)
+    path = os.path.join(HUB_DATA, "impersonation.json")
+    with open(path + ".tmp", "w") as f:
+        f.write("{")
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+    time.sleep(2)
+    b, pg, mark, before = own_sign_in("generic")
+    text = pg.locator("#portcullis-impersonation-notice").inner_text() if pg.locator("#portcullis-impersonation-notice").count() else ""
+    check("An administrator signed in as you. Your Sign-in page's history has the details." in text,
+          f"notice: an unreadable file shows the generic text (got {text!r})")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before, "notice: Continue past the generic text reaches the client")
+    after_login("generic", mark)
+    b.close()
+
+    # A later notice: only the new line (the first stays seen).
+    second = notice_record(int(time.time()) - 600, 5, reason="checking the backup", apps=[])
+    write_impersonation([], [], {"alice": [first, second]})
+    require_notice(base, alice)
+    b, pg, mark, before = own_sign_in("later")
+    lines = [l.strip() for l in pg.locator(".portcullis-notice-line").all_inner_texts()]
+    check(lines == [notice_line(second, 5)], f"notice: only the unseen notice is shown (got {lines})")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before, "notice: Continue reaches the client")
+    b.close()
+
+
+def newest_session(sessions):
+    """The id of the user's newest session ("none" without one): root keeps the earlier browsers' sessions,
+    and Keycloak lists a user's sessions in no fixed order."""
+    if not sessions:
+        return "none"
+    return max(sessions, key=lambda x: (x.get("start", 0), x.get("lastAccess", 0)))["id"]
+
+
+def impersonation_main():
+    from playwright.sync_api import sync_playwright
+
+    token = admin_token()
+    base = f"{KC}/admin/realms/{REALM}"
+    _, headers = http("POST", f"{base}/groups", {"name": "lldap_admin"}, token=token)
+    gid = headers["Location"].rsplit("/", 1)[1]
+    password = secrets.token_urlsafe(18)
+    root = create_person(token, password, required=(), username="root")
+    http("PUT", f"{base}/users/{root}/groups/{gid}", token=token)
+    alice = create_person(token, None, required=())
+    write_config(["passkey_device", "passkey_synced", "password", "security_key", "yubikey_cert"], False)
+    time.sleep(2)
+
+    server = HTTPServer(("127.0.0.1", 18081), Callback)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    imp_id = secrets.token_hex(16)
+    start = f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={imp_id}"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        ctx = browser.new_context()
+        page = ctx.new_page()
+
+        # root signs in with the password.
+        page.goto(authorize_url(pc_method="password"))
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#password").count() == 1, "impersonation: root gets the password form")
+        page.fill("#username", "root")
+        page.fill("#password", password)
+        page.locator("#kc-login").click()
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1])
+        check(code is not None, "impersonation: root signed in")
+        root_amr = tokens_of(code)[0].get("amr", []) if code else []
+        sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+        check(len(sessions or []) == 1, f"impersonation: root has one session ({len(sessions or [])})")
+        sid = newest_session(sessions)
+
+        now = int(time.time())
+        p1, s1 = records(imp_id, sid, now)
+        write_impersonation([p1], [s1])
+
+        status, location, _ = open_start(page, start)
+        want = f"{KC}/oauth2/start?rd=" + urllib.parse.quote(os.environ.get("PORTCULLIS_PORTAL_URL", "http://localhost:18081/portal/"), safe="")
+        check(status == 302 and location == want, f"impersonation: start answers 302 to oauth2/start (got {status} {location!r})")
+
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1]) if len(landed) > before else None
+        check(code is not None, "impersonation: the authorize after the start signs in without a form")
+        if code:
+            idt, access = tokens_of(code)
+            for name, c in (("ID token", idt), ("access token", access)):
+                check(c.get("preferred_username") == "alice", f"impersonation: {name} preferred_username alice (got {c.get('preferred_username')!r})")
+                check(c.get("act") == {"sub": "root"}, f"impersonation: {name} act.sub root (got {c.get('act')!r})")
+                check((c.get("pc_imp") or {}).get("id") == imp_id and isinstance((c.get("pc_imp") or {}).get("until"), int),
+                      f"impersonation: {name} pc_imp {{id, until}} (got {c.get('pc_imp')!r})")
+                check(IMP_REASON not in json.dumps(c), f"impersonation: {name} has no reason")
+            amr = idt.get("amr", [])
+            check(set(amr) == set(root_amr) | {"hwk"}, f"impersonation: amr = root's {root_amr} + hwk (got {amr})")
+        sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+        check(not sessions, f"impersonation: root's session is gone ({sessions})")
+
+        status, _, text = open_start(page, start)
+        check(status == 403, f"impersonation: a second start is refused (got {status})")
+        check("sign-in-as link can" in text, "impersonation: the refusal page (portcullis-impersonating.ftl)")
+
+        # A start bound to root's old session, opened in the impersonated browser: refused, with the banner.
+        id2 = secrets.token_hex(16)
+        p2, s2 = records(id2, sid, int(time.time()))
+        write_impersonation([p1, p2], [s1, s2])
+        status, _, text = open_start(page, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id2}")
+        check(status == 403 and "You are signed in as alice (by root)" in text and "impersonation/stop" in text,
+              f"impersonation: a start from the impersonated browser is refused with the banner and Stop (got {status})")
+
+        # The guard (D42): in the impersonated browser, only the file's clients and the SSO cookie alone.
+        for url, what in ((authorize_url(FRESH_CLIENT), "a client not in the file's clients"),
+                          (authorize_url(pc_method="security_key"), "pc_method"),
+                          (authorize_url(prompt="login"), "prompt=login"),
+                          (authorize_url(max_age="0"), "max_age=0"),
+                          (authorize_url(acr_values="2"), "acr_values")):
+            before = len(landed)
+            resp = page.goto(url)
+            page.wait_for_load_state("domcontentloaded")
+            text = page.content()
+            check(len(landed) == before and "Not while you are signed in as alice" in text
+                  and "You are signed in as alice (by root)" in text and resp is not None and resp.status == 403,
+                  f"impersonation guard: {what} refused with the banner, nothing issued (got {resp.status if resp else None})")
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        check(len(landed) > before and code_of(landed[-1]) is not None, "impersonation guard: the listed client still signs in")
+
+        # Ended (the record gone from the file, as after Stop): the next authorize logs the session out at once and
+        # starts again without it — the normal sign-in page, never the ended page, nothing issued as alice.
+        write_impersonation([], [])
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_load_state("domcontentloaded")
+        text = page.content()
+        check(len(landed) == before and "has ended" not in text
+              and (page.locator("#username").count() == 1 or page.locator("#authenticateWebAuthnButton").count() == 1),
+              "impersonation guard: after the end the next authorize shows the sign-in page (not the ended page), nothing issued")
+        alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+        check(not alive, f"impersonation guard: the ended session is logged out ({alive})")
+        # The administrator signs in again in that browser: as root, never as alice.
+        page.goto(authorize_url(pc_method="password"))
+        page.wait_for_load_state("domcontentloaded")
+        before = len(landed)
+        if page.locator("#password").count() == 1:
+            page.fill("#username", "root")
+            page.fill("#password", password)
+            page.locator("#kc-login").click()
+            page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        again = tokens_of(code_of(landed[-1]))[0] if len(landed) > before and code_of(landed[-1]) else {}
+        check(again.get("preferred_username") == "root" and "act" not in again and "pc_imp" not in again,
+              f"impersonation guard: signing in again after the end gives root's own session (got {again.get('preferred_username')!r})")
+        browser.close()
+
+        # The expiry task (every 15 s): ended in the file, then an unreadable file (fail closed).
+        for how in ("ended", "dropped", "restart"):
+            known, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+            known = {x["id"] for x in known or []}
+            b = p.chromium.launch()
+            c = b.new_context()
+            pg = c.new_page()
+            pg.goto(authorize_url(pc_method="password"))
+            pg.wait_for_load_state("domcontentloaded")
+            pg.fill("#username", "root")
+            pg.fill("#password", password)
+            pg.locator("#kc-login").click()
+            pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+            mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+            # This browser's session: the one that wasn't there before (Keycloak's start times are whole
+            # seconds, so the previous browser's may tie with it).
+            sid_n = newest_session([x for x in mine or [] if x["id"] not in known])
+            id_n = secrets.token_hex(16)
+            created_n = int(time.time())
+            # 150 s: shorter than the 300 s access-token lifespan, so the clamp to until shows.
+            pn, sn = records(id_n, sid_n, created_n, life=150)
+            write_impersonation([pn], [sn])
+            status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id_n}")
+            why = [l for l in log_lines() if f"impersonation {id_n} refused" in l][-1:] if status != 302 else []
+            check(status == 302, f"impersonation expiry ({how}): started (got {status}{' ' + why[0] if why else ''})")
+            # M6 / M3: an app holding alice's tokens (with a refresh token).
+            before = len(landed)
+            pg.goto(authorize_url())
+            pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+            refresh = None
+            if len(landed) > before and code_of(landed[-1]):
+                tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                    "grant_type": "authorization_code", "client_id": CLIENT, "code": code_of(landed[-1]),
+                    "redirect_uri": REDIRECT}, form=True)
+                refresh = tok.get("refresh_token")
+                idt, access = claims_of(tok["id_token"]), claims_of(tok["access_token"])
+                check(access.get("exp") == created_n + 150 and idt.get("exp") == created_n + 150,
+                      f"impersonation expiry ({how}): access and ID tokens' exp clamped to until "
+                      f"({access.get('exp')}, {idt.get('exp')}, until {created_n + 150})")
+            check(refresh is not None, f"impersonation expiry ({how}): the app holds a refresh token")
+            if refresh:
+                tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                    "grant_type": "refresh_token", "client_id": CLIENT, "refresh_token": refresh}, form=True)
+                check(claims_of(tok["access_token"]).get("exp", 0) <= created_n + 150,
+                      f"impersonation expiry ({how}): a refresh while live never outlives until")
+            alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+            check(len(alive or []) == 1, f"impersonation expiry ({how}): alice's impersonated session exists ({alive})")
+            time.sleep(16)  # at least one run of the task with the good file: it stays
+            alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+            check(len(alive or []) == 1, f"impersonation expiry ({how}): a live session is left alone ({alive})")
+            if how == "ended":
+                sn = dict(sn, ended=rfc3339(time.time()))
+                write_impersonation([], [sn])
+            elif how == "dropped":
+                # The record gone from a readable file: only PORTCULLIS_IMPERSONATED still names alice.
+                write_impersonation([], [])
+            else:
+                # Keycloak restarted while the file is unreadable: nothing in memory, the table still names alice.
+                subprocess.run(["docker", "stop", CONTAINER], check=True, stdout=subprocess.DEVNULL)
+                path = os.path.join(HUB_DATA, "impersonation.json")
+                with open(path + ".tmp", "w") as f:
+                    f.write("{")
+                os.chmod(path + ".tmp", 0o644)
+                os.replace(path + ".tmp", path)
+                subprocess.run(["docker", "start", CONTAINER], check=True, stdout=subprocess.DEVNULL)
+                for _ in range(90):
+                    try:
+                        http("GET", f"{KC}/realms/{REALM}/.well-known/openid-configuration")
+                        break
+                    except Exception:
+                        time.sleep(2)
+            gone_after = None
+            t0 = time.time()
+            while time.time() - t0 < 60:
+                alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+                if not alive:
+                    gone_after = time.time() - t0
+                    break
+                time.sleep(2)
+            check(gone_after is not None, f"impersonation expiry ({how}): alice's session logged out by the task"
+                  + (f" after {gone_after:.0f} s" if gone_after is not None else " (still there after 60 s)"))
+            if refresh:
+                try:
+                    http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                        "grant_type": "refresh_token", "client_id": CLIENT, "refresh_token": refresh}, form=True)
+                    check(False, f"impersonation expiry ({how}): the refresh after the logout is refused (it succeeded)")
+                except urllib.error.HTTPError as e:
+                    err = json.loads(e.read() or b"{}").get("error")
+                    check(e.code == 400 and err == "invalid_grant",
+                          f"impersonation expiry ({how}): the refresh after the logout gets invalid_grant (got {e.code} {err})")
+            b.close()
+
+        notice_phase(p, base, root, password, alice)
+
+    # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
+    try:
+        http("POST", f"{base}/users/{alice}/impersonation", {}, token=admin_token())
+        check(False, "impersonation: the stock impersonation endpoint is refused (it answered 2xx)")
+    except urllib.error.HTTPError as e:
+        check(e.code >= 400, f"impersonation: the stock impersonation endpoint is refused ({e.code})")
+
+    # M4: the realm's enabled required actions are exactly the smoke realm's (nothing a trigger could add after the flow).
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "test", "resources", "smoke-realm.json")) as f:
+        want = sorted(a["alias"] for a in json.load(f).get("requiredActions", []) if a.get("enabled"))
+    actions, _ = http("GET", f"{base}/authentication/required-actions", token=admin_token())
+    got = sorted(a["alias"] for a in actions or [] if a.get("enabled"))
+    check(got == want, f"impersonation: the enabled required actions are exactly {want} (got {got})")
+
+    token = admin_token()
+    events, _ = http("GET", f"{base}/events?type=IMPERSONATE&user={alice}&max=10", token=token)
+    events = events or []
+    hit = [e for e in events if (e.get("details") or {}).get("pc_imp") == imp_id]
+    check(len(hit) == 1 and hit[0]["details"].get("pc_act") == "root",
+          f"impersonation: one IMPERSONATE event with pc_imp and pc_act root (got {events})")
+    check(IMP_REASON not in json.dumps(events), "impersonation: no reason in the events")
+    logins = [e.get("details", {}) for e in login_events(token, alice)]
+    check(any(d.get("pc_act") == "root" for d in logins), f"impersonation: the LOGIN as alice has pc_act root (got {logins})")
+
+    lines = log_lines()
+    # The expiry phase writes an unreadable file on purpose: its one ERROR (no file values) is expected.
+    bad = [l for l in lines if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)
+           and "/hub-data/impersonation.json refused (" not in l]
+    check(any("/hub-data/impersonation.json refused (" in l for l in lines), "impersonation: the unreadable file is logged")
+    check(not [l for l in lines if "backchannel logout of an impersonated session failed" in l],
+          "impersonation: the expiry's backchannel logout worked (no fallback removal)")
+    check(not bad, "impersonation: no error naming portcullis in Keycloak's log" + "".join("\n    " + l for l in bad[:10]))
+    check(not [l for l in lines if IMP_REASON in l], "impersonation: the reason is never in Keycloak's log")
+    check(not [l for l in lines if NOTICE_REASON in l or "notice</b>" in l], "notice: the notice's reason is never in Keycloak's log")
+    print(f"{len(failures)} failure(s)")
+    sys.exit(1 if failures else 0)
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["x509"]:
         x509_main()
+    elif sys.argv[1:] == ["impersonation"]:
+        impersonation_main()
     else:
         main()

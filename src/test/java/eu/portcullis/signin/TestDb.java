@@ -52,6 +52,8 @@ final class TestDb implements AutoCloseable {
                 .provider("org.hibernate.jpa.HibernatePersistenceProvider")
                 .managedClass(PasskeyEntity.class)
                 .managedClass(SigninStateEntity.class)
+                .managedClass(eu.portcullis.signin.store.ImpersonatedEntity.class)
+                .managedClass(eu.portcullis.signin.store.NoticeSeenEntity.class)
                 .managedClass(TestCredentials.Local.class)
                 .managedClass(TestCredentials.Federated.class)
                 .property(PersistenceConfiguration.JDBC_URL, url)
@@ -60,6 +62,11 @@ final class TestDb implements AutoCloseable {
                 .property("hibernate.hbm2ddl.auto", "none");
         emf = Persistence.createEntityManagerFactory(cfg);
         em = emf.createEntityManager();
+    }
+
+    /** Another EntityManager on the same database (a second, concurrent request). */
+    EntityManager newEntityManager() {
+        return emf.createEntityManager();
     }
 
     /** Runs f in a committed transaction (Keycloak's own, in production). */
