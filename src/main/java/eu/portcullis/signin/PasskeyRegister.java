@@ -167,6 +167,7 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
         String action = context.getAuthenticationSession().getClientNote(Constants.KC_ACTION_PARAMETER);
         UserModel user = context.getUser();
         if (Constants.KC_ACTION_PARAMETER_SKIP_IF_EXISTS.equals(action) && hasPasskey(user)) {
+            History.reapply(context); // the LOGIN may follow in this request
             context.success();
             return;
         }
@@ -185,8 +186,21 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
         return false;
     }
 
+    /**
+     * {@link #register}; on success, the sign-in's history details back on
+     * {@code context.getEvent()}: the builder Keycloak sends this request's
+     * {@code LOGIN} with when no other required action is left ({@link
+     * History#reapply}).
+     */
     @Override
     public void processAction(RequiredActionContext context) {
+        register(context);
+        if (context.getStatus() == RequiredActionContext.Status.SUCCESS) {
+            History.reapply(context);
+        }
+    }
+
+    void register(RequiredActionContext context) {
         MultivaluedMap<String, String> params = context.getHttpRequest().getDecodedFormParameters();
         String retry = params.getFirst(WebAuthnConstants.IS_SET_RETRY);
         String browserError = params.getFirst(WebAuthnConstants.ERROR);

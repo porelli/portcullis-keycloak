@@ -38,6 +38,8 @@ import org.keycloak.services.validation.Validation;
  * authentication note {@link #METHOD_NOTE}: {@code portcullis-template}
  * folds it into {@code portcullis.fresh}, so a fresh password sign-in gives
  * {@code pc_fresh=password} (contract §8.1 {@code portcullis-fresh}).</li>
+ * <li>A posted form gets the history details {@code pc_method=password}
+ * and {@code pc_ua} before the check ({@link History#onFailure}).</li>
  * </ul>
  */
 public class PasswordForm extends UsernamePasswordForm {
@@ -82,9 +84,12 @@ public class PasswordForm extends UsernamePasswordForm {
     @Override
     public void action(AuthenticationFlowContext context) {
         MultivaluedMap<String, String> form = context.getHttpRequest().getDecodedFormParameters();
-        if (!form.containsKey("cancel") && !usable(context)) {
-            context.failure(AuthenticationFlowError.ACCESS_DENIED);
-            return;
+        if (!form.containsKey("cancel")) {
+            if (!usable(context)) {
+                context.failure(AuthenticationFlowError.ACCESS_DENIED);
+                return;
+            }
+            History.onFailure(context, PASSWORD); // pc_method / pc_ua on a LOGIN_ERROR
         }
         super.action(context);
     }

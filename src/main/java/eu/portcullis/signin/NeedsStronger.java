@@ -9,7 +9,8 @@ import java.util.Set;
  * What {@code portcullis-needs-stronger.ftl} shows (contract §8.1 "Native-OIDC
  * apps", the copy of mockup {@code signin-people.html} section 2): the app,
  * the methods the person signed in with, one line per alternative of the
- * template, and the set-up links. The template renders the method phrases
+ * template, and the set-up links (all to the Sign-in page,
+ * {@link TemplateAuthenticator#signinPage}). The template renders the method phrases
  * from message keys ({@code portcullisMethod_<id>}); every value goes
  * through FreeMarker's HTML auto-escaping.
  */
@@ -39,17 +40,17 @@ public final class NeedsStronger {
     private final boolean setUpPasskey;
     private final boolean setUpSecurityKey;
     private final boolean askAdmin;
-    private final String accountUrl;
+    private final String signinUrl;
 
     NeedsStronger(String app, List<String> signedIn, List<Line> alternatives, boolean setUpPasskey,
-            boolean setUpSecurityKey, boolean askAdmin, String accountUrl) {
+            boolean setUpSecurityKey, boolean askAdmin, String signinUrl) {
         this.app = app;
         this.signedIn = List.copyOf(signedIn);
         this.alternatives = List.copyOf(alternatives);
         this.setUpPasskey = setUpPasskey;
         this.setUpSecurityKey = setUpSecurityKey;
         this.askAdmin = askAdmin;
-        this.accountUrl = accountUrl;
+        this.signinUrl = signinUrl;
     }
 
     /**
@@ -60,7 +61,7 @@ public final class NeedsStronger {
      * for passwords and certificates, the page says "ask your admin".
      */
     static NeedsStronger of(String app, Set<String> have, List<Set<String>> alternatives, Set<String> setUp,
-            boolean addStronger, String accountUrl) {
+            boolean addStronger, String signinUrl) {
         int strongest = 0;
         for (String m : have) {
             strongest = Math.max(strongest, Methods.tenths(m));
@@ -101,7 +102,7 @@ public final class NeedsStronger {
                 askAdmin = true;
             }
         }
-        return new NeedsStronger(app, sorted(have), lines, passkey, securityKey, askAdmin, accountUrl);
+        return new NeedsStronger(app, sorted(have), lines, passkey, securityKey, askAdmin, signinUrl);
     }
 
     private static List<String> sorted(Set<String> methods) {
@@ -138,7 +139,7 @@ public final class NeedsStronger {
         return askAdmin;
     }
 
-    public String getAccountUrl() {
-        return accountUrl;
+    public String getSigninUrl() {
+        return signinUrl;
     }
 }

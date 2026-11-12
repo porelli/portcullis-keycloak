@@ -44,6 +44,12 @@
   "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
   "webAuthnPolicyPasswordlessCreateTimeout": 60,
   "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": true,
+  "eventsEnabled": true,
+  "eventsExpiration": 31536000,
+  "enabledEventTypes": [
+    "LOGIN",
+    "LOGIN_ERROR"
+  ],
   "attributes": {
     "acr.loa.map": "{}"
   },
@@ -98,7 +104,7 @@
     },
     {
       "alias": "portcullis-signin",
-      "description": "YubiKey certificate (automatic when the browser presents one), a passkey, or a password; each only while its method is on",
+      "description": "YubiKey certificate, then browser certificate (automatic when the browser presents one of that kind's CA), a passkey, or a password; each only while its method is on",
       "providerId": "basic-flow",
       "topLevel": false,
       "builtIn": false,
@@ -111,16 +117,23 @@
           "authenticatorConfig": "x509-config"
         },
         {
-          "authenticatorFlow": true,
+          "authenticator": "portcullis-x509",
+          "authenticatorFlow": false,
           "requirement": "ALTERNATIVE",
           "priority": 20,
+          "authenticatorConfig": "x509-browser-config"
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
           "flowAlias": "portcullis-signin-passkey"
         },
         {
           "authenticator": "portcullis-password-form",
           "authenticatorFlow": false,
           "requirement": "ALTERNATIVE",
-          "priority": 30,
+          "priority": 40,
           "authenticatorConfig": "password-config"
         }
       ]
@@ -347,6 +360,8 @@
     {
       "alias": "x509-config",
       "config": {
+        "portcullis.method": "yubikey_cert",
+        "portcullis.ca": "/opt/keycloak/conf/truststores/portcullis/portcullis-yubikey-ca.pem",
         "x509-cert-auth.canonical-dn-enabled": "false",
         "x509-cert-auth.serialnumber-hex-enabled": "false",
         "x509-cert-auth.regular-expression": "(.*?)(?:$)",
@@ -365,6 +380,32 @@
         "x509-cert-auth.extendedkeyusage": "1.3.6.1.5.5.7.3.2",
         "x509-cert-auth.confirmation-page-disallowed": "true",
         "default.reference.value": "mtls",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "x509-browser-config",
+      "config": {
+        "portcullis.method": "browser_cert",
+        "portcullis.ca": "/opt/keycloak/conf/truststores/portcullis/portcullis-browser-ca.pem",
+        "x509-cert-auth.canonical-dn-enabled": "false",
+        "x509-cert-auth.serialnumber-hex-enabled": "false",
+        "x509-cert-auth.regular-expression": "(.*?)(?:$)",
+        "x509-cert-auth.mapper-selection": "Username or Email",
+        "x509-cert-auth.mapper-selection.user-attribute-name": "usercertificate",
+        "x509-cert-auth.mapping-source-selection": "Subject's Common Name",
+        "x509-cert-auth.crl-checking-enabled": "true",
+        "x509-cert-auth.crl-relative-path": "http://vault:8200/v1/pki_file/crl##http://vault:8200/v1/pki_file/crl/delta",
+        "x509-cert-auth-crl-abort-if-non-updated": "true",
+        "x509-cert-auth.crldp-checking-enabled": "false",
+        "x509-cert-auth.ocsp-checking-enabled": "false",
+        "x509-cert-auth.ocsp-responder-uri": "",
+        "x509-cert-auth.revalidate-certificate-enabled": "true",
+        "x509-cert-auth.timestamp-validation-enabled": "true",
+        "x509-cert-auth.keyusage": "",
+        "x509-cert-auth.extendedkeyusage": "1.3.6.1.5.5.7.3.2",
+        "x509-cert-auth.confirmation-page-disallowed": "true",
+        "default.reference.value": "file",
         "default.reference.maxAge": "36000"
       }
     },

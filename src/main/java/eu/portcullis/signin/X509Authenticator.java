@@ -1,8 +1,11 @@
 package eu.portcullis.signin;
 
+import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import java.security.cert.X509Certificate;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 import org.keycloak.authentication.AuthenticationFlowContext;
@@ -16,13 +19,25 @@ import org.keycloak.models.UserModel;
 import org.keycloak.services.messages.Messages;
 
 /**
- * {@code portcullis-x509} (contract §8.1): Keycloak's X.509 client
- * certificate authenticator (its own trust, validity, revocation and user
- * mapping checks, configured on the execution together with the reference
- * value {@code mtls}). It steps aside ({@code attempted}) while
- * {@code yubikey_cert} is off or when {@code pc_method} asks for another
- * method; a confirmation posted meanwhile fails. When it signs the person in
- * it puts {@code yubikey_cert} in the authentication note {@link #METHOD_NOTE}.
+ * {@code portcullis-x509} (contract §8.1 "Flows", §8 "The {@code mtls} amr
+ * invariant"): Keycloak's X.509 client certificate authenticator (its own
+ * trust, validity, revocation and user mapping checks), one execution per
+ * certificate kind. Each execution's config names its method
+ * ({@link #METHOD_CONFIG}: {@code yubikey_cert} with the reference value
+ * {@code mtls}, {@code browser_cert} with {@code file}) and its CA file
+ * ({@link #CA_CONFIG}: {@code pki_int}'s or {@code pki_file}'s certificate).
+ *
+ * <p>An execution steps aside ({@code attempted}) unless all of these hold:
+ * its method is one of the two and switched on; {@code pc_method} allows it;
+ * a certificate is presented; its CA file reads ({@link CaFile}: missing,
+ * unreadable or not a CA = an ERROR naming portcullis); and the leaf was
+ * issued by that CA ({@link #issuedBy}: issuer name and signature). So a
+ * browser certificate never counts as {@code yubikey_cert} (never amr
+ * {@code mtls}), and a YubiKey certificate never as {@code browser_cert}.
+ * The CA file is read only when a leaf is presented and the method is on.
+ * When it signs the person in it puts its own method in the authentication
+ * note {@link #METHOD_NOTE}; before Keycloak's checks it adds the history
+ * details {@code pc_method} / {@code pc_ua} ({@link History#onFailure}).
  *
  * <p>A certificate never signs in another person than the one already known
  * in this authentication (a step-up, a {@code portcullis-template} step):
@@ -36,43 +51,148 @@ public class X509Authenticator extends X509ClientCertificateAuthenticator {
 
     /** The authentication note naming the certificate method that signed in. */
     public static final String METHOD_NOTE = "portcullis.x509.method";
+    /** The execution config's method: {@code yubikey_cert} or {@code browser_cert}. */
+    public static final String METHOD_CONFIG = "portcullis.method";
+    /** The execution config's CA file (the PEM certificate of the CA whose leaves it counts). */
+    public static final String CA_CONFIG = "portcullis.ca";
 
     static final String YUBIKEY_CERT = "yubikey_cert";
+    static final String BROWSER_CERT = "browser_cert";
 
     private final Supplier<SigninConfig> config;
+    private final Function<String, Optional<X509Certificate>> caFile;
 
     public X509Authenticator(boolean legacyCriticalBehavior, Supplier<SigninConfig> config) {
-        super(legacyCriticalBehavior);
-        this.config = config;
+        this(legacyCriticalBehavior, config, CaFile::load);
     }
 
-    private boolean usable(AuthenticationFlowContext context) {
-        return config.get().on(YUBIKEY_CERT) && PcMethod.allows(PcMethod.requested(context), YUBIKEY_CERT);
+    X509Authenticator(boolean legacyCriticalBehavior, Supplier<SigninConfig> config,
+            Function<String, Optional<X509Certificate>> caFile) {
+        super(legacyCriticalBehavior);
+        this.config = config;
+        this.caFile = caFile;
+    }
+
+    /**
+     * The method an execution config counts: {@code yubikey_cert} or
+     * {@code browser_cert}; anything else (missing, another id) is null and
+     * the execution steps aside.
+     */
+    static String method(AuthenticatorConfigModel cfg) {
+        Map<String, String> c = cfg == null ? null : cfg.getConfig();
+        String m = c == null ? null : c.get(METHOD_CONFIG);
+        return YUBIKEY_CERT.equals(m) || BROWSER_CERT.equals(m) ? m : null;
+    }
+
+    /**
+     * Whether ca issued leaf: the leaf's issuer is the CA's subject and its
+     * signature verifies with the CA's key (the JDK's checks only).
+     */
+    static boolean issuedBy(X509Certificate leaf, X509Certificate ca) {
+        if (leaf == null || ca == null) {
+            return false;
+        }
+        try {
+            if (!leaf.getIssuerX500Principal().equals(ca.getSubjectX500Principal())) {
+                return false;
+            }
+            leaf.verify(ca.getPublicKey());
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** The method of this execution when it may run now (on, allowed by pc_method), else null. */
+    private String usableMethod(AuthenticationFlowContext context) {
+        String m = method(context.getAuthenticatorConfig());
+        if (m == null || !config.get().on(m) || !PcMethod.allows(PcMethod.requested(context), m)) {
+            return null;
+        }
+        return m;
+    }
+
+    /** The presented leaf (null: none or unreadable). */
+    private X509Certificate leaf(AuthenticationFlowContext context) {
+        try {
+            X509Certificate[] chain = getCertificateChain(context);
+            return chain == null || chain.length == 0 ? null : chain[0];
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the leaf was issued by the CA of model's {@link #CA_CONFIG};
+     * an unreadable CA file logs an ERROR and counts nothing.
+     */
+    private boolean ownLeaf(AuthenticatorConfigModel model, String method, X509Certificate leaf) {
+        Map<String, String> c = model == null ? null : model.getConfig();
+        String path = c == null ? null : c.get(CA_CONFIG);
+        Optional<X509Certificate> ca;
+        try {
+            ca = caFile.apply(path);
+        } catch (RuntimeException e) {
+            ca = Optional.empty();
+        }
+        if (ca.isEmpty()) {
+            LOG.errorf("portcullis: portcullis-x509 (%s): its CA file %s is missing, unreadable or not a CA certificate; no %s counts",
+                    method, path, method);
+            return false;
+        }
+        if (!issuedBy(leaf, ca.get())) {
+            LOG.debugf("portcullis: portcullis-x509 (%s): the presented certificate wasn't issued by its CA", method);
+            return false;
+        }
+        return true;
     }
 
     @Override
     public void authenticate(AuthenticationFlowContext context) {
-        if (!usable(context)) {
+        String m = usableMethod(context);
+        if (m == null) {
             context.attempted();
             return;
         }
+        X509Certificate leaf = leaf(context);
+        if (leaf == null) {
+            context.attempted(); // no certificate: the CA file is never read
+            return;
+        }
+        if (!ownLeaf(context.getAuthenticatorConfig(), m, leaf)) {
+            context.attempted();
+            return;
+        }
+        History.onFailure(context, m);
         UserModel known = context.getUser();
         super.authenticate(context);
         if (sameUser(context, known)) {
-            noteSuccess(context);
+            noteSuccess(context, m);
         }
     }
 
     @Override
     public void action(AuthenticationFlowContext context) {
-        if (!usable(context)) {
+        String m = usableMethod(context);
+        if (m == null) {
             context.failure(AuthenticationFlowError.ACCESS_DENIED);
             return;
+        }
+        MultivaluedMap<String, String> form = context.getHttpRequest() == null ? null
+                : context.getHttpRequest().getDecodedFormParameters();
+        if (form == null || !form.containsKey("cancel")) {
+            // The confirmation counts only with this execution's own leaf presented.
+            X509Certificate leaf = leaf(context);
+            if (leaf == null || !ownLeaf(context.getAuthenticatorConfig(), m, leaf)) {
+                context.failure(AuthenticationFlowError.ACCESS_DENIED);
+                return;
+            }
+            History.onFailure(context, m);
         }
         UserModel known = context.getUser();
         super.action(context);
         if (sameUser(context, known)) {
-            noteSuccess(context);
+            noteSuccess(context, m);
         }
     }
 
@@ -91,25 +211,42 @@ public class X509Authenticator extends X509ClientCertificateAuthenticator {
         return false;
     }
 
-    private static void noteSuccess(AuthenticationFlowContext context) {
+    private static void noteSuccess(AuthenticationFlowContext context, String method) {
         if (context.getStatus() == FlowStatus.SUCCESS) {
-            context.getAuthenticationSession().setAuthNote(METHOD_NOTE, YUBIKEY_CERT);
+            context.getAuthenticationSession().setAuthNote(METHOD_NOTE, method);
         }
     }
 
     /**
+     * Whether this request presents a leaf issued by the CA of model's
+     * {@link #CA_CONFIG} ({@link Offer}: an X.509 "Try another way" row
+     * only then). No leaf: false, and the CA file isn't read.
+     */
+    boolean presentsOwnLeaf(AuthenticationFlowContext context, AuthenticatorConfigModel model) {
+        String m = method(model);
+        if (m == null) {
+            return false;
+        }
+        X509Certificate leaf = leaf(context);
+        return leaf != null && ownLeaf(model, m, leaf);
+    }
+
+    /**
      * The account the certificate this request presents maps to, with the
-     * execution's own X.509 config (Keycloak's identity extractor and user
-     * mapper); empty when there is none or it maps to nobody. The trust and
-     * revocation checks run when the authenticator itself signs it in.
+     * given execution's X.509 config (Keycloak's identity extractor and user
+     * mapper), only when the leaf was issued by that execution's CA; empty
+     * when there is none, it isn't that CA's, or it maps to nobody. The
+     * trust and revocation checks run when the authenticator itself signs it
+     * in.
      */
     Optional<UserModel> certificateUser(AuthenticationFlowContext context, AuthenticatorConfigModel model) {
         try {
-            if (model == null || model.getConfig() == null) {
+            String m = method(model);
+            if (m == null) {
                 return Optional.empty();
             }
             X509Certificate[] chain = getCertificateChain(context);
-            if (chain == null || chain.length == 0) {
+            if (chain == null || chain.length == 0 || !ownLeaf(model, m, chain[0])) {
                 return Optional.empty();
             }
             X509AuthenticatorConfigModel config = new X509AuthenticatorConfigModel(model);

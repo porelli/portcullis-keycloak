@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
@@ -84,12 +85,23 @@ public class TemplateAuthenticator implements Authenticator {
     static final String UNAVAILABLE = "portcullisSignInUnavailable";
 
     /** Notes carried over a step's flow reset (Keycloak's reset clears every authentication note). */
-    private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE, PasswordForm.METHOD_NOTE);
+    private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE,
+            PasswordForm.METHOD_NOTE, CookieAuthenticator.SSO_NOTE);
+    /** The Keycloak env naming the Sign-in page (core: {@code https://people.<domain>/signin}). */
+    static final String SIGNIN_URL_ENV = "PORTCULLIS_SIGNIN_URL";
 
     private final Supplier<SigninConfig> config;
 
+    /** The environment (the process's; a test gives its own). */
+    private final Function<String, String> env;
+
     public TemplateAuthenticator(Supplier<SigninConfig> config) {
+        this(config, System::getenv);
+    }
+
+    TemplateAuthenticator(Supplier<SigninConfig> config, Function<String, String> env) {
         this.config = config;
+        this.env = env;
     }
 
     @Override
@@ -111,7 +123,8 @@ public class TemplateAuthenticator implements Authenticator {
 
         Optional<Rule> template = cfg.templateForClient(clientId);
         if (template.isEmpty()) {
-            context.success(); // unlisted (and the file is valid): group-gate, mcp-gate or the Hub check it
+            // unlisted (and the file is valid): group-gate, mcp-gate or the Hub check it
+            succeed(context, Methods.ofAuthentication(context.getRealm(), authSession, cfg), cfg);
             return;
         }
         Rule rule = template.get();
@@ -124,14 +137,14 @@ public class TemplateAuthenticator implements Authenticator {
         }
         Set<String> have = Methods.ofAuthentication(context.getRealm(), authSession, cfg);
         if (rule.satisfiedBy(have)) {
-            context.success();
+            succeed(context, have, cfg);
             return;
         }
         Set<String> setUp = setUp(user, cfg);
         Set<String> asked = asked(authSession);
         Predicate<String> completable = m -> switch (m) {
             case "password" -> !PasswordForm.refused(user.getUsername());
-            case "yubikey_cert" -> certificateIsTheirs(context, user);
+            case "yubikey_cert", "browser_cert" -> certificateIsTheirs(context, user, m);
             default -> false;
         };
         boolean broker = inBrokerFlow(authSession);
@@ -143,9 +156,53 @@ public class TemplateAuthenticator implements Authenticator {
         }
         LOG.infof("portcullis: %s doesn't meet the sign-in template of %s", user.getUsername(), clientId);
         NeedsStronger page = NeedsStronger.of(cfg.clientName(clientId).orElse(clientId), have, rule.alternatives(),
-                setUp, cfg.addStronger(), accountUrl(context));
+                setUp, cfg.addStronger(), signinPage(context, env));
         Response response = context.form().setAttribute(ATTRIBUTE, page).createForm(PAGE);
         context.forceChallenge(response);
+    }
+
+    /**
+     * Success, with the LOGIN event's history details (contract §8.1
+     * "History details"): this authentication's methods (the authenticators
+     * that ran: their notes, while on), all of the session's, and the kind
+     * ({@code sso} / {@code step_up} when {@code auth-cookie} used an SSO
+     * session, else {@code sign_in}).
+     */
+    private static void succeed(AuthenticationFlowContext context, Set<String> session, SigninConfig cfg) {
+        AuthenticationSessionModel a = context.getAuthenticationSession();
+        Set<String> thisAuth = ranMethods(a, cfg);
+        boolean sso = a.getAuthNote(CookieAuthenticator.SSO_NOTE) != null;
+        Set<String> all = new LinkedHashSet<>(session);
+        all.addAll(thisAuth);
+        History.onSuccess(context, thisAuth, all, History.kind(sso, thisAuth));
+        context.success();
+    }
+
+    /**
+     * The methods whose authenticators ran in this authentication (their
+     * notes, each only with a value its authenticator writes), while on, in
+     * the method table's order.
+     */
+    static Set<String> ranMethods(AuthenticationSessionModel a, SigninConfig cfg) {
+        Set<String> found = new HashSet<>();
+        String kind = a.getAuthNote(PasskeyAuthenticator.KIND_NOTE);
+        if (kind != null && Methods.PASSKEY_KINDS.contains(kind)) {
+            found.add(kind);
+        }
+        String cert = a.getAuthNote(X509Authenticator.METHOD_NOTE);
+        if (X509Authenticator.YUBIKEY_CERT.equals(cert) || X509Authenticator.BROWSER_CERT.equals(cert)) {
+            found.add(cert);
+        }
+        if (PasswordForm.PASSWORD.equals(a.getAuthNote(PasswordForm.METHOD_NOTE))) {
+            found.add(PasswordForm.PASSWORD);
+        }
+        Set<String> out = new LinkedHashSet<>();
+        for (String m : Methods.IDS) {
+            if (found.contains(m) && cfg.on(m)) {
+                out.add(m);
+            }
+        }
+        return out;
     }
 
     /**
@@ -230,12 +287,16 @@ public class TemplateAuthenticator implements Authenticator {
         });
     }
 
-    /** The method that signed in this authentication (the strongest one, while on), else {@code none}. */
+    /**
+     * The method that signed in this authentication (the strongest one,
+     * while on: {@code yubikey_cert > security_key > passkey_device >
+     * browser_cert > passkey_synced > password}, the method table's order),
+     * else {@code none}.
+     */
     static String freshMethod(AuthenticationSessionModel a, SigninConfig cfg) {
         String best = NONE;
-        for (String n : KEPT_NOTES) {
-            String m = a.getAuthNote(n);
-            if (FreshMapper.isFreshMethod(m) && cfg.on(m) && (NONE.equals(best) || Methods.tenths(m) > Methods.tenths(best))) {
+        for (String m : ranMethods(a, cfg)) {
+            if (NONE.equals(best) || Methods.rank(m) > Methods.rank(best)) {
                 best = m;
             }
         }
@@ -249,12 +310,14 @@ public class TemplateAuthenticator implements Authenticator {
     }
 
     /**
-     * Whether this request presents a certificate that the flow's
-     * {@code portcullis-x509} execution (its own X.509 config) maps to this
-     * person; another person's certificate, or none, can't complete a step.
+     * Whether this request presents a certificate of method's kind that the
+     * flow's {@code portcullis-x509} execution of that method (its own X.509
+     * config: issued by its CA, then Keycloak's mapping) maps to this person;
+     * another person's certificate, another kind's, or none, can't complete a
+     * step.
      */
-    protected boolean certificateIsTheirs(AuthenticationFlowContext context, UserModel user) {
-        AuthenticatorConfigModel x509 = x509Config(context);
+    protected boolean certificateIsTheirs(AuthenticationFlowContext context, UserModel user, String method) {
+        AuthenticatorConfigModel x509 = x509Config(context, method);
         if (x509 == null) {
             return false;
         }
@@ -263,8 +326,11 @@ public class TemplateAuthenticator implements Authenticator {
                 .orElse(false);
     }
 
-    /** The config of the first {@code portcullis-x509} execution of this flow (sub-flows included). */
-    static AuthenticatorConfigModel x509Config(AuthenticationFlowContext context) {
+    /**
+     * The config of the first {@code portcullis-x509} execution of this flow
+     * (sub-flows included) whose {@code portcullis.method} is method.
+     */
+    static AuthenticatorConfigModel x509Config(AuthenticationFlowContext context, String method) {
         RealmModel realm = context.getRealm();
         if (context.getTopLevelFlow() == null) {
             return null;
@@ -280,11 +346,42 @@ public class TemplateAuthenticator implements Authenticator {
                 if (e.isAuthenticatorFlow() && e.getFlowId() != null) {
                     flows.add(e.getFlowId());
                 } else if (X509AuthenticatorFactory.PROVIDER_ID.equals(e.getAuthenticator()) && e.getAuthenticatorConfig() != null) {
-                    return realm.getAuthenticatorConfigById(e.getAuthenticatorConfig());
+                    AuthenticatorConfigModel c = realm.getAuthenticatorConfigById(e.getAuthenticatorConfig());
+                    if (method != null && method.equals(X509Authenticator.method(c))) {
+                        return c;
+                    }
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * The Sign-in page the needs-stronger page links to: the Keycloak env
+     * {@code PORTCULLIS_SIGNIN_URL} (core sets {@code
+     * https://people.<domain>/signin}) when it is an http(s) URL, else the
+     * account console's signing-in page ({@link #accountUrl}).
+     */
+    static String signinPage(AuthenticationFlowContext context) {
+        return signinPage(context, System::getenv);
+    }
+
+    /** {@link #signinPage(AuthenticationFlowContext)} with the environment env. */
+    static String signinPage(AuthenticationFlowContext context, Function<String, String> env) {
+        String v;
+        try {
+            v = env.apply(SIGNIN_URL_ENV);
+        } catch (RuntimeException e) {
+            v = null;
+        }
+        if (v != null) {
+            v = v.trim();
+            if ((v.startsWith("https://") || v.startsWith("http://")) && v.length() > "https://".length()
+                    && v.chars().noneMatch(ch -> ch <= ' ' || ch == 0x7f)) {
+                return v;
+            }
+        }
+        return accountUrl(context);
     }
 
     /** The account console's signing-in page of this realm. */

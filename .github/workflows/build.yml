@@ -12,6 +12,18 @@ on:
   # merge starts no push run). Dispatching on main needs write access, the
   # same trust as pushing to main.
   workflow_dispatch:
+    inputs:
+      # The Hub and core branch both compare steps (vectors, smoke realm)
+      # follow. Empty: this run's branch (the same-named branch when it
+      # exists, else main), like a push. Set: exactly that branch, which
+      # must exist on both. A cross-repo feature merged here before the Hub
+      # and core: dispatch on main with compare_ref=<the feature branch> so
+      # the run publishes `edge` (CLAUDE.md, "Merge order").
+      compare_ref:
+        description: Hub/core branch to compare against (empty = this run's branch, else main)
+        required: false
+        default: ''
+        type: string
 
 permissions: {}
 
@@ -55,13 +67,15 @@ jobs:
       # fixtures, no network.
       - name: Dependabot auto-merge tests
         run: |
-          shellcheck -S warning .github/automerge/*.sh
+          shellcheck -S warning .github/automerge/*.sh .github/compare-ref.sh
           bash .github/automerge/test.sh
 
   # The shared rule vectors (contract §8.1): src/test/resources/
   # signin_vectors.json is a byte copy of portcullis-hub's
   # internal/signin/testdata/vectors.json on the same-named branch when it
-  # exists (cross-repo feature branches land together), else main. When the
+  # exists (cross-repo feature branches land together), else main; a
+  # dispatched run's `compare_ref` names the branch instead (both compare
+  # steps, .github/compare-ref.sh). When the
   # Hub ref has no such file yet, or this repo has no copy yet (the
   # scaffolding-only main), it prints a notice and passes.
   vectors:
@@ -76,6 +90,7 @@ jobs:
       - name: Compare with the Hub's vectors
         env:
           REF: ${{ github.head_ref || github.ref_name }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
         run: |
           own=src/test/resources/signin_vectors.json
           if [ ! -f "$own" ]; then
@@ -83,18 +98,7 @@ jobs:
             exit 0
           fi
           url="https://github.com/porelli/portcullis-hub"
-          ref=main
-          if [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$REF" != main ]; then
-            # --exit-code: 0 = the branch exists, 2 = it doesn't (then main);
-            # anything else (network, auth) fails rather than comparing main.
-            rc=0
-            git ls-remote --exit-code --heads "$url" "$REF" >/dev/null || rc=$?
-            case "$rc" in
-              0) ref="$REF" ;;
-              2) ;;
-              *) echo "::error::git ls-remote $url $REF failed (exit $rc)"; exit 1 ;;
-            esac
-          fi
+          . .github/compare-ref.sh
           echo "portcullis-hub: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
           hub="$RUNNER_TEMP/hub_vectors.json"
           code=$(curl -sS -o "$hub" -w '%{http_code}' "https://raw.githubusercontent.com/porelli/portcullis-hub/$ref/internal/signin/testdata/vectors.json")
@@ -121,18 +125,11 @@ jobs:
       - name: Compare the smoke realm with core's flows
         env:
           REF: ${{ github.head_ref || github.ref_name }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
         run: |
           url="https://github.com/porelli/portcullis"
-          ref=main
-          if [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] && [ "$REF" != main ]; then
-            rc=0
-            git ls-remote --exit-code --heads "$url" "$REF" >/dev/null || rc=$?
-            case "$rc" in
-              0) ref="$REF" ;;
-              2) ;;
-              *) echo "::error::git ls-remote $url $REF failed (exit $rc)"; exit 1 ;;
-            esac
-          fi
+          . .github/compare-ref.sh
+          echo "portcullis: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
           core="$RUNNER_TEMP/realm-export.json"
           code=$(curl -sS -o "$core" -w '%{http_code}' "https://raw.githubusercontent.com/porelli/portcullis/$ref/keycloak/realm-export.json")
           case "$code" in
@@ -261,6 +258,20 @@ jobs:
           IMAGE: portcullis-keycloak:smoke
           PYTHON: /tmp/smoke-venv/bin/python
         run: bash .github/smoke/run.sh
+
+      # The mtls amr invariant (contract §8, §8.1 "Flows"): a test internal
+      # CA made with openssl (a YubiKey CA and a browser CA under one root,
+      # their CRLs served as http://vault:8200/v1/pki_{int,file}/crl),
+      # Keycloak with core's x509 options (traefik lookup, proxy headers,
+      # truststore directory, CRL cache time); each leaf posted in Traefik's
+      # header: the YubiKey leaf's amr has mtls and never file, the browser
+      # leaf's file and never mtls; a switched-off kind doesn't sign in; the
+      # LOGIN events carry the history details; no error naming portcullis.
+      - name: x509 kinds
+        env:
+          IMAGE: portcullis-keycloak:smoke
+          PYTHON: /tmp/smoke-venv/bin/python
+        run: bash .github/smoke/run.sh x509
 
       # Both platforms, never pushed: every run checks the arm64 image
       # builds. Main's publishing runs write the layer cache (mode=max:

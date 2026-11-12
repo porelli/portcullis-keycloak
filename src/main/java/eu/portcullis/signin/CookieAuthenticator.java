@@ -4,6 +4,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticatorUtil;
+import org.keycloak.authentication.FlowStatus;
 import org.keycloak.authentication.authenticators.util.AuthenticatorUtils;
 import org.keycloak.protocol.LoginProtocol;
 import org.keycloak.services.managers.AuthenticationManager;
@@ -22,8 +23,17 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * valid cookie, when the protocol asks for re-authentication, in a forked
  * flow, or when the session already has the method, the stock code runs
  * unchanged.
+ *
+ * <p>Whenever an SSO session is used — signed in with the cookie alone, or
+ * handed to the sign-in flow — it sets the authentication note
+ * {@link #SSO_NOTE}: {@code portcullis-template}'s history details tell
+ * {@code sso} and {@code step_up} from a new sign-in by it (contract §8.1
+ * "History details").
  */
 public class CookieAuthenticator extends org.keycloak.authentication.authenticators.browser.CookieAuthenticator {
+    /** The authentication note: this authentication used an SSO session. */
+    public static final String SSO_NOTE = "portcullis.sso";
+
     private final Supplier<SigninConfig> config;
 
     public CookieAuthenticator(Supplier<SigninConfig> config) {
@@ -34,7 +44,7 @@ public class CookieAuthenticator extends org.keycloak.authentication.authenticat
     public void authenticate(AuthenticationFlowContext context) {
         Optional<String> requested = PcMethod.requested(context);
         if (requested.isEmpty()) {
-            stock(context);
+            stockNoted(context);
             return;
         }
         AuthenticationManager.AuthResult sso = cookie(context);
@@ -44,13 +54,22 @@ public class CookieAuthenticator extends org.keycloak.authentication.authenticat
         }
         if (reauthenticate(context, sso) || PcMethod.metBy(requested.get(),
                 Methods.ofSession(context.getRealm(), sso.session(), config.get()))) {
-            stock(context);
+            stockNoted(context);
             return;
         }
         AuthenticationSessionModel authSession = context.getAuthenticationSession();
+        authSession.setAuthNote(SSO_NOTE, "true");
         context.setUser(sso.user());
         AuthenticatorUtils.updateCompletedExecutions(authSession, sso.session(), context.getExecution().getId());
         context.attempted();
+    }
+
+    /** The stock authenticator; the note when the cookie signed in. */
+    private void stockNoted(AuthenticationFlowContext context) {
+        stock(context);
+        if (context.getStatus() == FlowStatus.SUCCESS) {
+            context.getAuthenticationSession().setAuthNote(SSO_NOTE, "true");
+        }
     }
 
     /** The stock authenticator. */

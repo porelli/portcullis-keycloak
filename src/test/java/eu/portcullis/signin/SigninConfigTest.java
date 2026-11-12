@@ -85,8 +85,13 @@ class SigninConfigTest {
         assertTrue(c.on("security_key"));
         assertTrue(c.on("passkey_synced"));
         assertFalse(c.on("password"));
-        assertFalse(c.on("browser_cert"));
+        assertFalse(c.on("browser_cert"), "not listed");
         assertFalse(c.on("inv"));
+        // Sign-in part 2: browser_cert can be switched on like any method.
+        SigninConfig browser = SigninConfig.load(write(dir, "browser.json",
+                valid().replace("\"passkey_device\", \"passkey_synced\"", "\"browser_cert\", \"passkey_device\", \"passkey_synced\"")));
+        assertNotSame(SigninConfig.DENY_ALL, browser);
+        assertTrue(browser.on("browser_cert"));
         assertFalse(c.on(null));
         assertFalse(c.addStronger());
         assertEquals(87, c.mdsSerial());
@@ -214,7 +219,6 @@ class SigninConfigTest {
             {"a name as a number", ok.replace("\"name\": \"Nextcloud\"", "\"name\": 5")},
             {"a kind as a boolean", ok.replace("\"kind\": \"security_key\"", "\"kind\": true")},
             {"methods as a string", ok.replace("[\"passkey_device\", \"passkey_synced\", \"security_key\", \"yubikey_cert\"]", "\"security_key\"")},
-            {"browser_cert on", ok.replace("\"passkey_device\", \"passkey_synced\"", "\"browser_cert\", \"passkey_device\", \"passkey_synced\"")},
             {"a null template", ok.replaceAll("\"strong\": \\{\"op\": \"any\", \"items\": \\[\"security_key\", \"yubikey_cert\"\\]\\}", "\"strong\": null")},
             {"a null client", ok.replace("\"nextcloud\": {\"template\": \"standard\", \"name\": \"Nextcloud\"}", "\"nextcloud\": null")},
             {"a client with an empty name", ok.replace("\"name\": \"Nextcloud\"", "\"name\": \"\"")},

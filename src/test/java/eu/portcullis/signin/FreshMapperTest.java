@@ -66,6 +66,37 @@ class FreshMapperTest {
         assertEquals("yubikey_cert", issue(both, Configs.plain(), Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
     }
 
+    private static final SigninConfig BOTH_CERTS = Configs.of(X509AuthenticatorTest.ALL, false, "", "");
+
+    @Test
+    void browserCertFreshIsBrowserCert() {
+        // The Hub refuses it for certificates (D26); the extension reports it as it is.
+        Flow f = new Flow();
+        f.authNotes.put(X509Authenticator.METHOD_NOTE, "browser_cert");
+        assertEquals("browser_cert", issue(f, BOTH_CERTS, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+        Flow off = new Flow(); // browser_cert off by the time the token is issued
+        off.authNotes.put(X509Authenticator.METHOD_NOTE, "browser_cert");
+        assertFalse(issue(off, Configs.plain(), Map.of(), Map.of()).getOtherClaims().containsKey(FreshMapper.CLAIM));
+    }
+
+    @Test
+    void browserCertBeatsSyncedPasskey() {
+        // Both 2.5: the certificate wins the tie (review I2); a device-bound passkey beats both.
+        Flow f = new Flow();
+        f.authNotes.put(X509Authenticator.METHOD_NOTE, "browser_cert");
+        f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "passkey_synced");
+        assertEquals("browser_cert", issue(f, BOTH_CERTS, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+        Flow device = new Flow();
+        device.authNotes.put(X509Authenticator.METHOD_NOTE, "browser_cert");
+        device.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "passkey_device");
+        assertEquals("passkey_device", issue(device, BOTH_CERTS, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+        Flow pw = new Flow();
+        pw.authNotes.put(X509Authenticator.METHOD_NOTE, "browser_cert");
+        pw.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        SigninConfig all = Configs.of("\"browser_cert\", \"passkey_synced\", \"password\"", false, "", "");
+        assertEquals("browser_cert", issue(pw, all, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+    }
+
     private static final SigninConfig WITH_PASSWORD = Configs.of(Configs.WITH_PASSWORD, false, "", "");
     private static final String RIGHT = "correct horse battery staple";
 
@@ -138,12 +169,23 @@ class FreshMapperTest {
 
     @Test
     void unknownNoteValuesGiveNoClaim() {
-        for (String v : new String[] {"browser_cert", "inv", "pwd", "none", "PASSWORD", ""}) {
+        for (String v : new String[] {"inv", "pwd", "file", "mtls", "none", "PASSWORD", ""}) {
             Flow f = new Flow();
             f.authNotes.put(PasswordForm.METHOD_NOTE, v);
             f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, v);
             assertFalse(issue(f, WITH_PASSWORD, Map.of(), Map.of()).getOtherClaims().containsKey(FreshMapper.CLAIM), v);
         }
+    }
+
+    @Test
+    void aNoteHoldsOnlyItsOwnMethods() {
+        // A certificate id in the passkey note, a passkey kind in the certificate note: nothing.
+        SigninConfig cfg = Configs.of(X509AuthenticatorTest.ALL, false, "", "");
+        Flow f = new Flow();
+        f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "browser_cert");
+        f.authNotes.put(X509Authenticator.METHOD_NOTE, "security_key");
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "yubikey_cert");
+        assertFalse(issue(f, cfg, Map.of(), Map.of()).getOtherClaims().containsKey(FreshMapper.CLAIM));
     }
 
     @Test
