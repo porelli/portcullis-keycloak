@@ -2,6 +2,7 @@ package eu.portcullis.signin;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -146,6 +147,72 @@ class PasskeyStoreTest {
             db.em.clear();
             assertEquals(7L, s.seenUntil(fed));
             db.txRun(em -> new PasskeyStore(em).selfCheck());
+        }
+    }
+
+    /**
+     * M2: two first Continues racing (no row yet). The loser's insert hits the
+     * primary key at commit; advanceInOwnTransaction runs it again, which
+     * finds the winner's row and moves it forward. Never an exception.
+     */
+    @Test
+    void noticeSeenFirstInsertRace() throws Exception {
+        try (TestDb db = new TestDb()) {
+            int[] attempts = {0};
+            eu.portcullis.signin.store.NoticeSeenStore.Tx racing = job -> {
+                jakarta.persistence.EntityManager mine = db.newEntityManager();
+                try {
+                    mine.getTransaction().begin();
+                    job.accept(mine); // finds no row, persists
+                    if (attempts[0]++ == 0) {
+                        // The other Continue commits its row first.
+                        db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance("u-alice", 1_000L));
+                    }
+                    mine.getTransaction().commit();
+                } catch (RuntimeException e) {
+                    if (mine.getTransaction().isActive()) {
+                        mine.getTransaction().rollback();
+                    }
+                    throw e;
+                } finally {
+                    mine.close();
+                }
+            };
+            assertTrue(eu.portcullis.signin.store.NoticeSeenStore.advanceInOwnTransaction(racing, "u-alice", 2_000L));
+            assertEquals(2, attempts[0], "the loser ran again");
+            db.em.clear();
+            assertEquals(2_000L, new eu.portcullis.signin.store.NoticeSeenStore(db.em).seenUntil("u-alice"));
+
+            // The retry with a lower value keeps the winner's (never back).
+            attempts[0] = 0;
+            db.txRun(em -> em.createQuery("delete from PortcullisImpNoticeSeen").executeUpdate());
+            db.em.clear();
+            eu.portcullis.signin.store.NoticeSeenStore.Tx racingHigher = job -> {
+                jakarta.persistence.EntityManager mine = db.newEntityManager();
+                try {
+                    mine.getTransaction().begin();
+                    job.accept(mine);
+                    if (attempts[0]++ == 0) {
+                        db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance("u-alice", 9_000L));
+                    }
+                    mine.getTransaction().commit();
+                } catch (RuntimeException e) {
+                    if (mine.getTransaction().isActive()) {
+                        mine.getTransaction().rollback();
+                    }
+                    throw e;
+                } finally {
+                    mine.close();
+                }
+            };
+            assertTrue(eu.portcullis.signin.store.NoticeSeenStore.advanceInOwnTransaction(racingHigher, "u-alice", 2_000L));
+            db.em.clear();
+            assertEquals(9_000L, new eu.portcullis.signin.store.NoticeSeenStore(db.em).seenUntil("u-alice"));
+
+            // Failing every time: false, never an exception (the Continue still completes).
+            assertFalse(eu.portcullis.signin.store.NoticeSeenStore.advanceInOwnTransaction(job -> {
+                throw new jakarta.persistence.PersistenceException("down");
+            }, "u-alice", 3_000L));
         }
     }
 }

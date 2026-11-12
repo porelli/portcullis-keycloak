@@ -64,6 +64,11 @@ final class TestDb implements AutoCloseable {
         em = emf.createEntityManager();
     }
 
+    /** Another EntityManager on the same database (a second, concurrent request). */
+    EntityManager newEntityManager() {
+        return emf.createEntityManager();
+    }
+
     /** Runs f in a committed transaction (Keycloak's own, in production). */
     <T> T tx(Function<EntityManager, T> f) {
         em.getTransaction().begin();

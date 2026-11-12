@@ -17,9 +17,11 @@ import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 import org.keycloak.authentication.RequiredActionContext;
 import org.keycloak.authentication.RequiredActionProvider;
+import org.keycloak.connections.jpa.JpaConnectionProvider;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.services.managers.AuthenticationManager;
 
 /**
@@ -38,7 +40,8 @@ import org.keycloak.services.managers.AuthenticationManager;
  * History#reapply} and {@code success()} silently. An unreadable file: the
  * generic text.</li>
  * <li>{@link #processAction} (Continue): the seen time moved forward to what
- * the page showed (never back; not at all after the generic text), then
+ * the page showed (in its own transaction, retried once, so two first
+ * Continues racing never fail the sign-in; a failed write only warns) (never back; not at all after the generic text), then
  * {@link History#reapply} and {@code success()} (F12). In an impersonated
  * session (a crafted post): the refusal page, nothing stored, never
  * completed — Keycloak 26.8.1's {@code processRequireAction} has no
@@ -75,7 +78,13 @@ final class ImpersonationNotice implements RequiredActionProvider {
 
         @Override
         public void advance(KeycloakSession s, UserModel u, long until) {
-            NoticeSeenStore.of(s).advance(u.getId(), until);
+            String userId = u.getId();
+            boolean stored = NoticeSeenStore.advanceInOwnTransaction(job -> KeycloakModelUtils.runJobInTransaction(
+                    s.getKeycloakSessionFactory(), own -> job.accept(own.getProvider(JpaConnectionProvider.class).getEntityManager())),
+                    userId, until);
+            if (!stored) {
+                LOG.warnf("portcullis: the notice's seen time for %s wasn't stored: it may be shown again", u.getUsername());
+            }
         }
     };
 
