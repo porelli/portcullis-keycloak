@@ -110,6 +110,7 @@ class ImpersonationFileTest {
                 good.replace("\"fresh_at\": \"2026-11-12T14:02:51Z\"", "\"fresh_at\": \"yesterday\""), // a bad time
                 good.replace("\"ended\": null", "\"ended\": 5"),
                 good.replace("\"fresh_at\": \"2026-11-12T14:02:51Z\"", "\"fresh_at\": \"2026-11-12T14:03:04Z\""), // after created + 5 s
+                good.replace("\"until\": \"2026-11-12T14:32:58Z\"", "\"until\": \"2026-11-12T14:32:59Z\""), // until > created + 30 min
                 good.replace("\"ended\": null", ""),                         // missing field (with the comma left: bad JSON too)
                 good.replace(", \"ended\": null", ""),                       // missing field
                 good.replace("\"admin_sid\": \"f7c1e2d4-1b2a-4c3d-9e8f-001122334455\"", "\"admin_sid\": null"),

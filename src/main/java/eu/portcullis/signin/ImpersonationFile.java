@@ -190,11 +190,6 @@ final class ImpersonationFile {
     }
 
     /**
-     * Why the file was refused, without any value from it: a Jackson error's
-     * class and JSON path (its message can quote the offending value — even
-     * a reason), else this class's own message (field names and rules only).
-     */
-    /**
      * A Jackson error's JSON path with the file's own words left out: field
      * names of this class's records, array indexes, {@code {…}} for a map
      * key (a username) and for an unknown field's name.
@@ -217,6 +212,11 @@ final class ImpersonationFile {
         return b.toString();
     }
 
+    /**
+     * Why the file was refused, without any value from it: a Jackson error's
+     * class and JSON path (its message can quote the offending value — even
+     * a reason), else this class's own message (field names and rules only).
+     */
     static String clip(Throwable e) {
         Throwable c = e instanceof IOException && e.getCause() instanceof IllegalArgumentException ? e.getCause() : e;
         String m;
@@ -274,8 +274,12 @@ final class ImpersonationFile {
             if (freshAt.isAfter(created.plusSeconds(5))) {
                 throw new IllegalArgumentException("pending.fresh_at: after created");
             }
+            Instant until = time(p.until(), "pending.until");
+            if (until.isAfter(created.plusSeconds(30 * 60))) {
+                throw new IllegalArgumentException("pending.until: after created + 30 min");
+            }
             Pending v = new Pending(id, username(p.admin(), "pending.admin"), p.adminSid(), username(p.target(), "pending.target"),
-                    reason(p.reason(), "pending.reason"), p.fresh(), freshAt, created, time(p.until(), "pending.until"));
+                    reason(p.reason(), "pending.reason"), p.fresh(), freshAt, created, until);
             if (pending.put(id, v) != null) {
                 throw new IllegalArgumentException("pending: an id twice");
             }
