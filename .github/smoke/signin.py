@@ -59,7 +59,10 @@ then the record ended in the file, the record dropped from a readable file
 (only the extension's PORTCULLIS_IMPERSONATED still names alice), or
 Keycloak restarted while the file is unreadable (nothing in memory) —
 alice's session is logged out by the task within 60 s with no browser
-involved. The
+involved; each phase's app (smoke) holds tokens whose exp is clamped to
+until, its refresh while live stays within until, and its refresh after
+the logout gets invalid_grant. The realm's enabled required actions are
+exactly the smoke realm's. The
 log has no error naming portcullis and never the reason.
 """
 
@@ -500,11 +503,11 @@ def write_impersonation(pending, sessions):
     time.sleep(2)  # a bind mount's cached attributes (Docker Desktop)
 
 
-def records(imp_id, sid, created):
+def records(imp_id, sid, created, life=1800):
     p = {"id": imp_id, "admin": "root", "admin_sid": sid, "target": "alice", "reason": IMP_REASON,
-         "fresh": "security_key", "fresh_at": rfc3339(created - 5), "created": rfc3339(created), "until": rfc3339(created + 1800)}
+         "fresh": "security_key", "fresh_at": rfc3339(created - 5), "created": rfc3339(created), "until": rfc3339(created + life)}
     s = {"id": imp_id, "admin": "root", "target": "alice", "reason": IMP_REASON,
-         "started": rfc3339(created), "until": rfc3339(created + 1800), "ended": None}
+         "started": rfc3339(created), "until": rfc3339(created + life), "ended": None}
     return p, s
 
 
@@ -640,10 +643,32 @@ def impersonation_main():
             mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
             sid_n = mine[0]["id"] if mine else "none"
             id_n = secrets.token_hex(16)
-            pn, sn = records(id_n, sid_n, int(time.time()))
+            created_n = int(time.time())
+            # 150 s: shorter than the 300 s access-token lifespan, so the clamp to until shows.
+            pn, sn = records(id_n, sid_n, created_n, life=150)
             write_impersonation([pn], [sn])
             status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id_n}")
             check(status == 302, f"impersonation expiry ({how}): started (got {status})")
+            # M6 / M3: an app holding alice's tokens (with a refresh token).
+            before = len(landed)
+            pg.goto(authorize_url())
+            pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+            refresh = None
+            if len(landed) > before and code_of(landed[-1]):
+                tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                    "grant_type": "authorization_code", "client_id": CLIENT, "code": code_of(landed[-1]),
+                    "redirect_uri": REDIRECT}, form=True)
+                refresh = tok.get("refresh_token")
+                idt, access = claims_of(tok["id_token"]), claims_of(tok["access_token"])
+                check(access.get("exp") == created_n + 150 and idt.get("exp") == created_n + 150,
+                      f"impersonation expiry ({how}): access and ID tokens' exp clamped to until "
+                      f"({access.get('exp')}, {idt.get('exp')}, until {created_n + 150})")
+            check(refresh is not None, f"impersonation expiry ({how}): the app holds a refresh token")
+            if refresh:
+                tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                    "grant_type": "refresh_token", "client_id": CLIENT, "refresh_token": refresh}, form=True)
+                check(claims_of(tok["access_token"]).get("exp", 0) <= created_n + 150,
+                      f"impersonation expiry ({how}): a refresh while live never outlives until")
             alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
             check(len(alive or []) == 1, f"impersonation expiry ({how}): alice's impersonated session exists ({alive})")
             time.sleep(16)  # at least one run of the task with the good file: it stays
@@ -680,6 +705,15 @@ def impersonation_main():
                 time.sleep(2)
             check(gone_after is not None, f"impersonation expiry ({how}): alice's session logged out by the task"
                   + (f" after {gone_after:.0f} s" if gone_after is not None else " (still there after 60 s)"))
+            if refresh:
+                try:
+                    http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+                        "grant_type": "refresh_token", "client_id": CLIENT, "refresh_token": refresh}, form=True)
+                    check(False, f"impersonation expiry ({how}): the refresh after the logout is refused (it succeeded)")
+                except urllib.error.HTTPError as e:
+                    err = json.loads(e.read() or b"{}").get("error")
+                    check(e.code == 400 and err == "invalid_grant",
+                          f"impersonation expiry ({how}): the refresh after the logout gets invalid_grant (got {e.code} {err})")
             b.close()
 
     # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
@@ -688,6 +722,13 @@ def impersonation_main():
         check(False, "impersonation: the stock impersonation endpoint is refused (it answered 2xx)")
     except urllib.error.HTTPError as e:
         check(e.code >= 400, f"impersonation: the stock impersonation endpoint is refused ({e.code})")
+
+    # M4: the realm's enabled required actions are exactly the smoke realm's (nothing a trigger could add after the flow).
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "test", "resources", "smoke-realm.json")) as f:
+        want = sorted(a["alias"] for a in json.load(f).get("requiredActions", []) if a.get("enabled"))
+    actions, _ = http("GET", f"{base}/authentication/required-actions", token=admin_token())
+    got = sorted(a["alias"] for a in actions or [] if a.get("enabled"))
+    check(got == want, f"impersonation: the enabled required actions are exactly {want} (got {got})")
 
     token = admin_token()
     events, _ = http("GET", f"{base}/events?type=IMPERSONATE&user={alice}&max=10", token=token)

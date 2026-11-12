@@ -32,7 +32,8 @@ import org.keycloak.representations.IDToken;
  * the person's own. Partial notes (never written by
  * {@link ImpersonationResource}) give {@code pc_imp} with {@code until} 0 and
  * no {@code act}: malformed and past for every reader, so the token is
- * refused rather than passing as the person's own.
+ * refused rather than passing as the person's own. The access, ID and
+ * introspection tokens' {@code exp} is clamped to {@code until} ({@link #clamp}).
  */
 public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
         implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper, TokenIntrospectionTokenMapper {
@@ -44,6 +45,7 @@ public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
     public AccessToken transformAccessToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
             UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
         setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        clamp(token, userSession);
         return token;
     }
 
@@ -51,6 +53,7 @@ public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
     public IDToken transformIDToken(IDToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
             UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
         setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        clamp(token, userSession);
         return token;
     }
 
@@ -65,7 +68,26 @@ public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
     public AccessToken transformIntrospectionToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
             UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
         setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        clamp(token, userSession);
         return token;
+    }
+
+    /**
+     * M3: an impersonated session's token never outlives {@code pc_imp.until}:
+     * {@code exp} is lowered to it (never raised). Partial notes give exp 1
+     * (expired; Keycloak reads 0 as "never expires"). A refresh after the
+     * expiry task's logout fails anyway; this bounds what was issued before.
+     */
+    static void clamp(IDToken token, UserSessionModel userSession) {
+        Optional<Impersonation.Info> i = Impersonation.of(userSession);
+        if (i.isEmpty()) {
+            return;
+        }
+        long until = i.get().until() == null || i.get().admin() == null || i.get().reason() == null ? 1L : i.get().until().getEpochSecond();
+        Long exp = token.getExp();
+        if (exp == null || exp > until) {
+            token.exp(until);
+        }
     }
 
     @Override

@@ -3,8 +3,8 @@
   The Portcullis sign-in extension's tables (contract §8.1 portcullis-passkey-store,
   plan D5). Keycloak runs this changelog through the JpaEntityProvider
   portcullis-passkey-store. No migration changesets: there are no installs to
-  upgrade from; a feature's new table is its own changeSet (the test server
-  has run the first one).
+  upgrade from. Never edit a deployed changeSet (portcullis-passkey-1 is
+  deployed): one new changeSet per release, edited freely until it is deployed.
 -->
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -69,7 +69,8 @@
         </createTable>
     </changeSet>
 
-    <!-- Sign-in part 3 (contract §8.1 "Ending"): the people signed in as, until none of their sessions is impersonated. -->
+    <!-- Sign-in part 3's changeSet (contract §8.1 "Impersonation"): every part-3 table goes here until it deploys.
+         PORTCULLIS_IMPERSONATED: the people signed in as, until none of their sessions is impersonated ("Ending"). -->
     <changeSet author="portcullis" id="portcullis-impersonation-1">
         <createTable tableName="PORTCULLIS_IMPERSONATED">
             <column name="USER_ID" type="VARCHAR(255)">

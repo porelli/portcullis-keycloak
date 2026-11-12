@@ -113,4 +113,35 @@ class ImpersonationMapperTest {
         IDToken none = m.transformIDToken(new IDToken(), model(), f.session, session(Map.of()), CTX);
         assertTrue(none.getOtherClaims().isEmpty());
     }
+
+    /** M3: an impersonated session's access, ID and introspection tokens never outlive pc_imp.until (never extended). */
+    @Test
+    void expClampedToUntil() {
+        long until = 1794494578L;
+        Map<String, String> notes = Map.of(Impersonation.ID, ID, "IMPERSONATOR_USERNAME", "root",
+                Impersonation.UNTIL, String.valueOf(until), Impersonation.REASON, "checking quota");
+        ImpersonationMapper m = new ImpersonationMapper();
+        Flow f = flow();
+        java.util.List<java.util.function.Function<Long, IDToken>> kinds = java.util.List.of(
+                exp -> m.transformAccessToken(withExp(new AccessToken(), exp), model(), f.session, session(notes), CTX),
+                exp -> m.transformIDToken(withExp(new IDToken(), exp), model(), f.session, session(notes), CTX),
+                exp -> m.transformIntrospectionToken(withExp(new AccessToken(), exp), model(), f.session, session(notes), CTX));
+        for (java.util.function.Function<Long, IDToken> k : kinds) {
+            assertEquals(until, k.apply(until + 3600).getExp(), "clamped");
+            assertEquals(until - 100, k.apply(until - 100).getExp(), "an earlier exp is kept, never extended");
+            assertEquals(until, k.apply(null).getExp(), "no exp: until");
+        }
+        // Partial notes: expired at once (1, not 0: Keycloak reads exp 0 as "never expires").
+        IDToken partial = m.transformAccessToken(withExp(new AccessToken(), until), model(), f.session,
+                session(Map.of(Impersonation.ID, ID)), CTX);
+        assertEquals(1L, partial.getExp());
+        // Not impersonated: untouched.
+        AccessToken plain = m.transformAccessToken(withExp(new AccessToken(), until + 3600), model(), f.session, session(Map.of()), CTX);
+        assertEquals(until + 3600, plain.getExp());
+    }
+
+    private static <T extends IDToken> T withExp(T t, Long exp) {
+        t.exp(exp);
+        return t;
+    }
 }
