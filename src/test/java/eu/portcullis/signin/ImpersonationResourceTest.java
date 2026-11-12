@@ -63,6 +63,7 @@ class ImpersonationResourceTest {
         String fileJson;
         Instant created_ = NOW.minusSeconds(5);
         Instant freshAt = NOW.minusSeconds(10);
+        String method = "GET";
         final int t1 = (int) (Time.currentTimeSeconds() - 600);
 
         Start() {
@@ -151,6 +152,11 @@ class ImpersonationResourceTest {
                 }
 
                 @Override
+                public String method(KeycloakSession s) {
+                    return method;
+                }
+
+                @Override
                 public URI base(KeycloakSession s) {
                     return URI.create("https://auth.example.com/");
                 }
@@ -169,7 +175,9 @@ class ImpersonationResourceTest {
         assertEquals(302, o.status(), String.valueOf(s.f.formAttributes));
         assertEquals(URI.create("https://auth.example.com/oauth2/start?rd=https%3A%2F%2Fexample.com%2F"), o.location());
         assertEquals(List.of("identity", "logOut sid-root", "create alice", "loginCookie alice sid-alice"), s.ops);
-        assertEquals("u-root", s.created.get("IMPERSONATOR_ID"));
+        // Never IMPERSONATOR_ID: Keycloak's TokenManager.setActClaimFromImpersonator would replace our act
+        // with {"sub": <the admin's UUID>, "preferred_username": …} (CI 43137670746).
+        assertFalse(s.created.containsKey("IMPERSONATOR_ID"), String.valueOf(s.created));
         assertEquals("root", s.created.get("IMPERSONATOR_USERNAME"));
         assertEquals(ID, s.created.get(Impersonation.ID));
         assertEquals(String.valueOf(s.created_.plusSeconds(1800).getEpochSecond()), s.created.get(Impersonation.UNTIL));
@@ -239,6 +247,7 @@ class ImpersonationResourceTest {
         refused("unknown id", "no pending start", s -> s.file(ImpersonationFileTest.OLD, "root", "sid-root", "alice"));
         refused("created 121 s ago", "older than 120 s", s -> {
             s.created_ = NOW.minusSeconds(121);
+            s.freshAt = s.created_.minusSeconds(5);
             s.file(ID, "root", "sid-root", "alice");
         });
         refused("the record ended", "no running record", s -> s.fileJson = s.fileJson.replace("\"ended\": null", "\"ended\": \"" + NOW + "\""));
@@ -276,6 +285,9 @@ class ImpersonationResourceTest {
         refused("target has webauthn-register-passwordless", "unfinished sign-in step", s ->
                 s.alice.fake.on("getRequiredActionsStream", a -> Stream.of("webauthn-register-passwordless")));
         refused("no execution for the touch", "can't be carried over", s -> s.f.flows.put("flow-browser", List.of(s.f.executions.get("exec-mtls"))));
+        refused("HEAD (a prefetch)", "only GET", s -> s.method = "HEAD");
+        refused("POST", "only GET", s -> s.method = "POST");
+        refused("no request method", "only GET", s -> s.method = null);
         refused("PORTCULLIS_PORTAL_URL unset", "PORTCULLIS_PORTAL_URL", s -> s.env.remove(ImpersonationResource.PORTAL_URL_ENV));
         refused("PORTCULLIS_PORTAL_URL not http(s)", "PORTCULLIS_PORTAL_URL", s -> s.env.put(ImpersonationResource.PORTAL_URL_ENV, "javascript:alert(1)"));
         // The notice is the one required action allowed.

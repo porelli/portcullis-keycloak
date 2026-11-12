@@ -1,6 +1,5 @@
 package eu.portcullis.signin;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,10 +10,11 @@ import org.keycloak.models.ProtocolMapperModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.protocol.oidc.mappers.AbstractOIDCProtocolMapper;
 import org.keycloak.protocol.oidc.mappers.OIDCAccessTokenMapper;
-import org.keycloak.protocol.oidc.mappers.OIDCAttributeMapperHelper;
 import org.keycloak.protocol.oidc.mappers.OIDCIDTokenMapper;
+import org.keycloak.protocol.oidc.mappers.TokenIntrospectionTokenMapper;
 import org.keycloak.protocol.oidc.mappers.UserInfoTokenMapper;
 import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.representations.AccessToken;
 import org.keycloak.representations.IDToken;
 
 /**
@@ -25,23 +25,47 @@ import org.keycloak.representations.IDToken;
  * <li>{@code pc_imp} = {@code {"id": "<id>", "until": <epoch seconds>}}.</li>
  * </ul>
  * The claim names are fixed (a configured {@code claim.name} is ignored) and
- * the reason is never emitted. Partial notes (never written by
+ * the reason is never emitted. Nothing switches them off: the access token,
+ * the ID token, userinfo and introspection always carry them (the
+ * include-in-token flags and lightweight access tokens are not read, and the
+ * mapper has no config), so an impersonated session's token never passes as
+ * the person's own. Partial notes (never written by
  * {@link ImpersonationResource}) give {@code pc_imp} with {@code until} 0 and
  * no {@code act}: malformed and past for every reader, so the token is
  * refused rather than passing as the person's own.
  */
 public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
-        implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper {
+        implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper, TokenIntrospectionTokenMapper {
     public static final String PROVIDER_ID = "portcullis-impersonation";
     static final String ACT = "act";
     static final String PC_IMP = "pc_imp";
 
-    private static final List<ProviderConfigProperty> PROPERTIES = properties();
+    @Override
+    public AccessToken transformAccessToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
+            UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+        setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        return token;
+    }
 
-    private static List<ProviderConfigProperty> properties() {
-        List<ProviderConfigProperty> out = new ArrayList<>();
-        OIDCAttributeMapperHelper.addIncludeInTokensConfig(out, ImpersonationMapper.class);
-        return List.copyOf(out);
+    @Override
+    public IDToken transformIDToken(IDToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
+            UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+        setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        return token;
+    }
+
+    @Override
+    public AccessToken transformUserInfoToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
+            UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+        setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        return token;
+    }
+
+    @Override
+    public AccessToken transformIntrospectionToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session,
+            UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+        setClaim(token, mappingModel, userSession, session, clientSessionCtx);
+        return token;
     }
 
     @Override
@@ -83,6 +107,6 @@ public final class ImpersonationMapper extends AbstractOIDCProtocolMapper
 
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
-        return PROPERTIES;
+        return List.of();
     }
 }

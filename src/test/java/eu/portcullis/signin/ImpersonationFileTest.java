@@ -109,6 +109,7 @@ class ImpersonationFileTest {
                 good.replace("\"fresh\": \"security_key\"", "\"fresh\": \"password\""),   // not a touch
                 good.replace("\"fresh_at\": \"2026-11-12T14:02:51Z\"", "\"fresh_at\": \"yesterday\""), // a bad time
                 good.replace("\"ended\": null", "\"ended\": 5"),
+                good.replace("\"fresh_at\": \"2026-11-12T14:02:51Z\"", "\"fresh_at\": \"2026-11-12T14:03:04Z\""), // after created + 5 s
                 good.replace("\"ended\": null", ""),                         // missing field (with the comma left: bad JSON too)
                 good.replace(", \"ended\": null", ""),                       // missing field
                 good.replace("\"admin_sid\": \"f7c1e2d4-1b2a-4c3d-9e8f-001122334455\"", "\"admin_sid\": null"),
@@ -127,6 +128,53 @@ class ImpersonationFileTest {
         Path p = dir.resolve("impersonation.json");
         Files.writeString(p, good);
         assertTrue(ImpersonationFile.load(p).allowed());
+    }
+
+    @Test
+    void freshAtUpToCreatedPlusFive() throws Exception {
+        String good = example("null");
+        assertTrue(parse(good.replace("\"fresh_at\": \"2026-11-12T14:02:51Z\"", "\"fresh_at\": \"2026-11-12T14:03:03Z\"")).allowed());
+    }
+
+    /** M3: a refused file's log line names the exception and the JSON path, never a value from the file. */
+    @Test
+    void refusalLogHasNoFileValues(@TempDir Path dir) throws Exception {
+        String good = example("null");
+        List<String> docs = List.of(
+                good.replace("\"reason\": \"checking quota\", \"fresh\"", "\"reason\": 98765432, \"fresh\""),
+                good.replace("\"allowed\": true", "\"allowed\": \"secretvalue\""),
+                good.replace("\"version\": 1", "\"version\": \"secretvalue\""),
+                good.replace("{\"version\": 1", "{\"version\": 1, secretvalue"),
+                good.replace("\"allowed\": true", "\"allowed\": true, \"secretvalue\": 1"));
+        Path p = dir.resolve("impersonation.json");
+        java.util.logging.Logger jul = java.util.logging.Logger.getLogger(ImpersonationFile.class.getName());
+        List<String> lines = new java.util.ArrayList<>();
+        java.util.logging.Handler h = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord rec) {
+                lines.add(String.valueOf(rec.getMessage()) + " " + java.util.Arrays.toString(rec.getParameters()));
+            }
+
+            @Override
+            public void flush() {}
+
+            @Override
+            public void close() {}
+        };
+        jul.addHandler(h);
+        try {
+            for (String d : docs) {
+                Files.writeString(p, d);
+                assertSame(ImpersonationFile.DENY, ImpersonationFile.load(p), d);
+            }
+        } finally {
+            jul.removeHandler(h);
+        }
+        assertEquals(docs.size(), lines.size(), String.valueOf(lines));
+        for (String l : lines) {
+            assertTrue(l.contains("refused"), l);
+            assertFalse(l.contains("98765432") || l.contains("secretvalue") || l.contains("quota"), l);
+        }
     }
 
     @Test

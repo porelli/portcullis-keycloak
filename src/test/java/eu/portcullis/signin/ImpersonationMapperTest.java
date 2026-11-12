@@ -42,7 +42,7 @@ class ImpersonationMapperTest {
 
     @Test
     void claimsWhenImpersonated() {
-        Map<String, String> notes = Map.of(Impersonation.ID, ID, "IMPERSONATOR_USERNAME", "root", "IMPERSONATOR_ID", "u-root",
+        Map<String, String> notes = Map.of(Impersonation.ID, ID, "IMPERSONATOR_USERNAME", "root",
                 Impersonation.UNTIL, "1794494578", Impersonation.REASON, "checking quota");
         ImpersonationMapper m = new ImpersonationMapper();
         Flow f = flow();
@@ -61,6 +61,43 @@ class ImpersonationMapperTest {
         IDToken partial = m.transformIDToken(new IDToken(), model(), f.session, session(Map.of(Impersonation.ID, ID)), CTX);
         assertFalse(partial.getOtherClaims().containsKey("act"));
         assertEquals(Map.of("id", ID, "until", 0L), partial.getOtherClaims().get("pc_imp"));
+    }
+
+    /**
+     * I1: no knob switches the claims off — not the include-in-token flags,
+     * not a client with lightweight access tokens, not introspection — and
+     * the mapper offers no config at all.
+     */
+    @Test
+    void claimsEvenWhenConfiguredOff() {
+        Map<String, String> notes = Map.of(Impersonation.ID, ID, "IMPERSONATOR_USERNAME", "root",
+                Impersonation.UNTIL, "1794494578", Impersonation.REASON, "checking quota");
+        ProtocolMapperModel off = new ProtocolMapperModel();
+        off.setName("impersonation");
+        off.setProtocolMapper(ImpersonationMapper.PROVIDER_ID);
+        off.setConfig(new HashMap<>(Map.of("id.token.claim", "false", "access.token.claim", "false",
+                "userinfo.token.claim", "false", "introspection.token.claim", "false", "lightweight.claim", "false")));
+        ProtocolMapperModel empty = new ProtocolMapperModel();
+        empty.setProtocolMapper(ImpersonationMapper.PROVIDER_ID);
+        empty.setConfig(new HashMap<>());
+        Flow f = new Flow();
+        f.contextFake.ret("getClient", Fake.named("lightweight client").ret("getClientId", "nextcloud")
+                .on("getAttribute", a -> "client.use.lightweight.access.token.enabled".equals(a[0]) ? "true" : null)
+                .as(org.keycloak.models.ClientModel.class));
+        ImpersonationMapper m = new ImpersonationMapper();
+        assertTrue(m.getConfigProperties().isEmpty());
+        assertTrue(m instanceof org.keycloak.protocol.oidc.mappers.TokenIntrospectionTokenMapper);
+        for (ProtocolMapperModel model : new ProtocolMapperModel[] {off, empty}) {
+            IDToken[] tokens = {
+                m.transformAccessToken(new AccessToken(), model, f.session, session(notes), CTX),
+                m.transformIDToken(new IDToken(), model, f.session, session(notes), CTX),
+                m.transformUserInfoToken(new AccessToken(), model, f.session, session(notes), CTX),
+                m.transformIntrospectionToken(new AccessToken(), model, f.session, session(notes), CTX)};
+            for (IDToken t : tokens) {
+                assertEquals(Map.of("sub", "root"), t.getOtherClaims().get("act"));
+                assertEquals(Map.of("id", ID, "until", 1794494578L), t.getOtherClaims().get("pc_imp"));
+            }
+        }
     }
 
     @Test

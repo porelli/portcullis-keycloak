@@ -112,6 +112,9 @@ public final class ImpersonationResource implements RealmResourceProvider {
 
         /** The server's base URI ({@code https://auth.<domain>/}). */
         URI base(KeycloakSession s);
+
+        /** The request's HTTP method (JAX-RS answers HEAD with the GET method). */
+        String method(KeycloakSession s);
     }
 
     /** Keycloak's own calls, as {@code UserResource.impersonate} makes them (26.8.1). */
@@ -151,6 +154,11 @@ public final class ImpersonationResource implements RealmResourceProvider {
         public URI base(KeycloakSession s) {
             return s.getContext().getUri().getBaseUri();
         }
+
+        @Override
+        public String method(KeycloakSession s) {
+            return s.getContext().getHttpRequest().getHttpMethod();
+        }
     };
 
     /** The answer: a redirect (302 + location) or the page (403 + the rendered form). */
@@ -188,17 +196,27 @@ public final class ImpersonationResource implements RealmResourceProvider {
     @Produces(MediaType.TEXT_HTML)
     public Response start(@QueryParam("id") String id) {
         Outcome o = begin(id);
+        CacheControl none = new CacheControl();
+        none.setNoStore(true);
         if (o.location() != null) {
-            CacheControl none = new CacheControl();
-            none.setNoStore(true);
             return Response.status(Response.Status.FOUND).location(o.location()).cacheControl(none).build();
         }
-        return o.page();
+        return Response.fromResponse(o.page()).cacheControl(none).build();
     }
 
     /** The checks and the start; see the class comment. */
     Outcome begin(String id) {
         RealmModel realm = session.getContext().getRealm();
+        String method;
+        try {
+            method = ops.method(session);
+        } catch (RuntimeException e) {
+            method = null;
+        }
+        if (!"GET".equals(method)) {
+            // A HEAD (or a prefetch by another method) never runs the start or uses up the id.
+            return refuse(id != null && ImpersonationFile.ID.matcher(id).matches() ? id : "-", "only GET starts it", null);
+        }
         boolean wellFormed = id != null && ImpersonationFile.ID.matcher(id).matches();
         String shown = wellFormed ? id : "-";
         ImpersonationFile f = file.get();
@@ -257,7 +275,8 @@ public final class ImpersonationResource implements RealmResourceProvider {
 
         ops.logOut(session, realm, adminSession);
         UserSessionModel us = ops.create(session, realm, target);
-        us.setNote(ImpersonationSessionNote.IMPERSONATOR_ID.toString(), admin.getId());
+        // Never IMPERSONATOR_ID: with it, Keycloak's TokenManager.setActClaimFromImpersonator (26.8.1) runs
+        // after every mapper and replaces our act with {"sub": <the admin's user id>, …}.
         us.setNote(ImpersonationSessionNote.IMPERSONATOR_USERNAME.toString(), admin.getUsername());
         us.setNote(Impersonation.ID, id);
         us.setNote(Impersonation.UNTIL, String.valueOf(p.until().getEpochSecond()));

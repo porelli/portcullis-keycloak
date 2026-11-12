@@ -189,9 +189,47 @@ final class ImpersonationFile {
         }
     }
 
-    /** The exception's class and message, without control characters, clipped (Jackson leaves the source out). */
-    private static String clip(Throwable e) {
-        String m = e.getClass().getSimpleName() + ": " + Objects.toString(e.getMessage(), "");
+    /**
+     * Why the file was refused, without any value from it: a Jackson error's
+     * class and JSON path (its message can quote the offending value — even
+     * a reason), else this class's own message (field names and rules only).
+     */
+    /**
+     * A Jackson error's JSON path with the file's own words left out: field
+     * names of this class's records, array indexes, {@code {…}} for a map
+     * key (a username) and for an unknown field's name.
+     */
+    private static String path(com.fasterxml.jackson.databind.JsonMappingException j) {
+        StringBuilder b = new StringBuilder("$");
+        List<com.fasterxml.jackson.databind.JsonMappingException.Reference> refs = j.getPath();
+        for (int i = 0; i < refs.size(); i++) {
+            com.fasterxml.jackson.databind.JsonMappingException.Reference r = refs.get(i);
+            boolean last = i == refs.size() - 1;
+            if (r.getIndex() >= 0) {
+                b.append('[').append(r.getIndex()).append(']');
+            } else if (r.getFrom() instanceof Map || (last && j instanceof com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException)
+                    || r.getFieldName() == null || !r.getFieldName().matches("[a-z_]{1,16}")) {
+                b.append(".{…}");
+            } else {
+                b.append('.').append(r.getFieldName());
+            }
+        }
+        return b.toString();
+    }
+
+    static String clip(Throwable e) {
+        Throwable c = e instanceof IOException && e.getCause() instanceof IllegalArgumentException ? e.getCause() : e;
+        String m;
+        if (c instanceof com.fasterxml.jackson.databind.JsonMappingException j) {
+            m = j.getClass().getSimpleName() + " at " + path(j);
+        } else if (c instanceof com.fasterxml.jackson.core.JsonProcessingException j) {
+            m = j.getClass().getSimpleName() + (j.getLocation() == null ? ""
+                    : " at line " + j.getLocation().getLineNr() + ", column " + j.getLocation().getColumnNr());
+        } else if (c instanceof IllegalArgumentException) {
+            m = Objects.toString(c.getMessage(), "");
+        } else {
+            m = c.getClass().getSimpleName();
+        }
         m = m.replaceAll("\\p{Cntrl}", " ");
         return m.length() > 300 ? m.substring(0, 300) + "…" : m;
     }
@@ -231,9 +269,13 @@ final class ImpersonationFile {
             if (!TOUCH_METHODS.contains(p.fresh())) {
                 throw new IllegalArgumentException("pending.fresh: not a touch method");
             }
+            Instant created = time(p.created(), "pending.created");
+            Instant freshAt = time(p.freshAt(), "pending.fresh_at");
+            if (freshAt.isAfter(created.plusSeconds(5))) {
+                throw new IllegalArgumentException("pending.fresh_at: after created");
+            }
             Pending v = new Pending(id, username(p.admin(), "pending.admin"), p.adminSid(), username(p.target(), "pending.target"),
-                    reason(p.reason(), "pending.reason"), p.fresh(), time(p.freshAt(), "pending.fresh_at"),
-                    time(p.created(), "pending.created"), time(p.until(), "pending.until"));
+                    reason(p.reason(), "pending.reason"), p.fresh(), freshAt, created, time(p.until(), "pending.until"));
             if (pending.put(id, v) != null) {
                 throw new IllegalArgumentException("pending: an id twice");
             }
