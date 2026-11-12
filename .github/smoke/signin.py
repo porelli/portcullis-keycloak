@@ -585,7 +585,7 @@ def notice_phase(p, base, root, root_password, alice):
     pg.wait_for_url("http://localhost:18081/**", timeout=30000)
     mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
     imp_id = secrets.token_hex(16)
-    pn, sn = records(imp_id, mine[0]["id"] if mine else "none", int(time.time()))
+    pn, sn = records(imp_id, newest_session(mine), int(time.time()))
     write_impersonation([pn], [sn], notices)
     require_notice(base, alice)
     status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={imp_id}")
@@ -672,6 +672,14 @@ def notice_phase(p, base, root, root_password, alice):
     b.close()
 
 
+def newest_session(sessions):
+    """The id of the user's newest session ("none" without one): root keeps the earlier browsers' sessions,
+    and Keycloak lists a user's sessions in no fixed order."""
+    if not sessions:
+        return "none"
+    return max(sessions, key=lambda x: (x.get("start", 0), x.get("lastAccess", 0)))["id"]
+
+
 def impersonation_main():
     from playwright.sync_api import sync_playwright
 
@@ -709,7 +717,7 @@ def impersonation_main():
         root_amr = tokens_of(code)[0].get("amr", []) if code else []
         sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
         check(len(sessions or []) == 1, f"impersonation: root has one session ({len(sessions or [])})")
-        sid = sessions[0]["id"] if sessions else "none"
+        sid = newest_session(sessions)
 
         now = int(time.time())
         p1, s1 = records(imp_id, sid, now)
@@ -805,7 +813,7 @@ def impersonation_main():
             pg.locator("#kc-login").click()
             pg.wait_for_url("http://localhost:18081/**", timeout=30000)
             mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
-            sid_n = mine[0]["id"] if mine else "none"
+            sid_n = newest_session(mine)
             id_n = secrets.token_hex(16)
             created_n = int(time.time())
             # 150 s: shorter than the 300 s access-token lifespan, so the clamp to until shows.
