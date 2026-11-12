@@ -36,7 +36,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * the {@code LOGIN} has no {@code pc_kind} (the Hub: "the sign-in's methods
  * weren't recorded").</li>
  * </ul>
- * {@code pc_act} is reserved for part 3 and never written here.
+ * {@code pc_act} (sign-in part 3, F24): on a {@code LOGIN} in an impersonated
+ * session — {@link Impersonation#of} the authentication's user session is
+ * present — the administrator's username; one of {@link #SUCCESS_DETAILS},
+ * so the re-apply carries it. A session that isn't impersonated never has
+ * it (no empty value either).
  */
 final class History {
     private History() {}
@@ -46,6 +50,7 @@ final class History {
     static final String SESSION = "pc_session";
     static final String UA = "pc_ua";
     static final String METHOD = "pc_method";
+    static final String ACT = "pc_act";
 
     static final String SIGN_IN = "sign_in";
     static final String STEP_UP = "step_up";
@@ -53,7 +58,9 @@ final class History {
 
     /** The authentication notes {@link #onSuccess} keeps its details in ({@link #reapply}). */
     static final String NOTE_PREFIX = "portcullis.history.";
-    static final List<String> SUCCESS_DETAILS = List.of(KIND, METHODS, SESSION, UA);
+    static final List<String> SUCCESS_DETAILS = List.of(KIND, METHODS, SESSION, UA, ACT);
+    /** Details written only with a value (never as {@code ""}). */
+    private static final List<String> ONLY_WITH_VALUE = List.of(ACT);
 
     /** The longest {@code pc_ua} (characters). */
     static final int UA_MAX = 256;
@@ -70,13 +77,24 @@ final class History {
             return;
         }
         e.removeDetail(METHOD);
-        Map<String, String> d = Map.of(KIND, kind == null ? "" : kind, METHODS, joined(thisAuth),
-                SESSION, joined(session), UA, ua(c));
         AuthenticationSessionModel a = c.getAuthenticationSession();
+        Map<String, String> d = new HashMap<>(Map.of(KIND, kind == null ? "" : kind, METHODS, joined(thisAuth),
+                SESSION, joined(session), UA, ua(c)));
+        Impersonation.of(Impersonation.userSessionOf(c.getSession(), c.getRealm(), a, c.getUser()))
+                .map(Impersonation.Info::admin)
+                .ifPresent(admin -> d.put(ACT, admin));
         for (String key : SUCCESS_DETAILS) {
-            put(e, key, d.get(key));
+            String v = d.get(key);
+            if (v == null && ONLY_WITH_VALUE.contains(key)) {
+                e.removeDetail(key);
+                if (a != null) {
+                    a.removeAuthNote(NOTE_PREFIX + key);
+                }
+                continue;
+            }
+            put(e, key, v);
             if (a != null) {
-                a.setAuthNote(NOTE_PREFIX + key, d.get(key));
+                a.setAuthNote(NOTE_PREFIX + key, v);
             }
         }
     }
@@ -98,6 +116,10 @@ final class History {
         e.removeDetail(METHOD);
         for (String key : SUCCESS_DETAILS) {
             String v = a.getAuthNote(NOTE_PREFIX + key);
+            if ((v == null || v.isEmpty()) && ONLY_WITH_VALUE.contains(key)) {
+                e.removeDetail(key);
+                continue;
+            }
             put(e, key, v == null ? "" : v);
         }
     }

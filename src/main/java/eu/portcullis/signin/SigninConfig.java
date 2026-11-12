@@ -186,7 +186,8 @@ public final class SigninConfig {
 
     private static final ObjectMapper MAPPER = strictMapper();
 
-    private static ObjectMapper strictMapper() {
+    /** The strict decoding every Hub file gets (also {@link ImpersonationFile}). */
+    static ObjectMapper strictMapper() {
         JsonMapper m = JsonMapper.builder()
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)

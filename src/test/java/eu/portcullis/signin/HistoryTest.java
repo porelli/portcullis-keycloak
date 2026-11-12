@@ -2,6 +2,7 @@ package eu.portcullis.signin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -75,5 +76,47 @@ class HistoryTest {
         Flow later = new Flow();
         History.reapply(f.authSession, later.event);
         assertFalse(later.eventDetails().containsKey(History.KIND));
+    }
+    /**
+     * F24: a LOGIN in an impersonated session (the authentication's user
+     * session has Portcullis' notes) carries pc_act = the administrator, and
+     * the re-apply after a required action carries it too; a session that
+     * isn't impersonated never has it.
+     */
+    @Test
+    void actWhenImpersonated() {
+        Flow f = new Flow();
+        Flow.Person alice = f.person("u-alice", "alice");
+        f.user = alice.model;
+        Map<String, String> notes = new java.util.HashMap<>(Map.of(Impersonation.ID, ImpersonationFileTest.ID,
+                "IMPERSONATOR_USERNAME", "root", Impersonation.UNTIL, "1794494578", Impersonation.REASON, "checking quota"));
+        f.userSessions.put(f.rootId, Fake.named("alice session").ret("getId", f.rootId).ret("getUser", alice.model)
+                .on("getNote", a -> notes.get((String) a[0])).as(org.keycloak.models.UserSessionModel.class));
+        History.onSuccess(f.context, Set.of(), Set.of("security_key"), "sso");
+        assertEquals("root", f.eventDetails().get(History.ACT));
+        assertTrue(History.SUCCESS_DETAILS.contains(History.ACT));
+        assertFalse(f.eventDetails().toString().contains("quota"));
+
+        Flow later = new Flow();
+        History.reapply(f.authSession, later.event);
+        assertEquals("root", later.eventDetails().get(History.ACT));
+
+        // Not impersonated: no pc_act, on the event or after a re-apply.
+        Flow plain = new Flow();
+        plain.user = plain.person("u-alice", "alice").model;
+        History.onSuccess(plain.context, Set.of(), Set.of("security_key"), "sso");
+        assertFalse(plain.eventDetails().containsKey(History.ACT));
+        Flow plainLater = new Flow();
+        History.reapply(plain.authSession, plainLater.event);
+        assertFalse(plainLater.eventDetails().containsKey(History.ACT));
+        assertEquals("sso", plainLater.eventDetails().get(History.KIND));
+
+        // The stock feature's notes alone aren't an impersonation; a session of someone else isn't this one's.
+        Flow stock = new Flow();
+        stock.user = stock.person("u-alice", "alice").model;
+        stock.userSessions.put(stock.rootId, Fake.named("s").ret("getUser", stock.user)
+                .on("getNote", a -> "IMPERSONATOR_USERNAME".equals(a[0]) ? "root" : null).as(org.keycloak.models.UserSessionModel.class));
+        History.onSuccess(stock.context, Set.of(), Set.of(), "sso");
+        assertFalse(stock.eventDetails().containsKey(History.ACT));
     }
 }

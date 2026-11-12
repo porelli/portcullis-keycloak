@@ -35,6 +35,11 @@ import org.junit.jupiter.api.Test;
  */
 class NeedsStrongerTemplateTest {
     static String render(NeedsStronger page) throws Exception {
+        return render(TemplateAuthenticator.PAGE, Map.of(TemplateAuthenticator.ATTRIBUTE, page));
+    }
+
+    /** The jar's template name rendered with these attributes (plus msg and properties). */
+    static String render(String name, Map<String, Object> attributes) throws Exception {
         Configuration cfg = new Configuration(Configuration.VERSION_2_3_32);
         cfg.setOutputFormat(HTMLOutputFormat.INSTANCE);
         cfg.setNewBuiltinClassResolver(TemplateClassResolver.ALLOWS_NOTHING_RESOLVER);
@@ -59,12 +64,11 @@ class NeedsStrongerTemplateTest {
             }
             return new MessageFormat(pattern, Locale.ENGLISH).format(params);
         };
-        Map<String, Object> model = new HashMap<>();
-        model.put(TemplateAuthenticator.ATTRIBUTE, page);
+        Map<String, Object> model = new HashMap<>(attributes);
         model.put("msg", msg);
         model.put("properties", Map.of("kcButtonPrimaryClass", "pf-primary", "kcButtonDefaultClass", "pf-default"));
         StringWriter out = new StringWriter();
-        cfg.getTemplate(TemplateAuthenticator.PAGE, "UTF-8").process(model, out);
+        cfg.getTemplate(name, "UTF-8").process(model, out);
         return out.toString();
     }
 

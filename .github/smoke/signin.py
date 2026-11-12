@@ -34,6 +34,22 @@ kind still does, as mtls / file; the LOGIN events carry
 the history details (pc_kind, pc_methods, pc_session, pc_ua); and Keycloak
 logs no error naming portcullis. The CRLs are served on 0.0.0.0:8200 (the
 container reaches the host as vault).
+
+`signin.py impersonation` is the smoke step "impersonation" (contract §8.1
+"Impersonation"): the admin API creates the group lldap_admin, root (in it)
+and alice; root signs in with a password (pc_method=password); the script
+writes impersonation.json (allowed, written now, clients with the smoke
+client, a pending record bound to root's Keycloak session id and the same
+id's sessions record, ended null) and opens
+portcullis-impersonate/start?id= with root's cookies: a 302 to
+<auth>/oauth2/start?rd=<PORTCULLIS_PORTAL_URL>. An authorize for smoke then
+gives a token for alice with act.sub root, pc_imp.id the id and the amr of
+root's session plus hwk (the security_key touch); root's session is gone; a
+second start gets 403; a start bound to root's old session from the
+impersonated browser gets 403 with the banner; Keycloak's own impersonation
+answers an error (--features-disabled=impersonation); the IMPERSONATE event
+has pc_imp and pc_act and no reason, the LOGIN as alice pc_act root; and the
+log has no error naming portcullis and never the reason.
 """
 
 import base64
@@ -127,10 +143,10 @@ def admin_token():
     return tok["access_token"]
 
 
-def create_person(token, password, required=("webauthn-register-passwordless",)):
+def create_person(token, password, required=("webauthn-register-passwordless",), username="alice"):
     base = f"{KC}/admin/realms/{REALM}/users"
     _, headers = http("POST", base, {
-        "username": "alice", "email": "alice@example.com", "firstName": "Alice", "lastName": "Smoke",
+        "username": username, "email": f"{username}@example.com", "firstName": username.title(), "lastName": "Smoke",
         "enabled": True, "emailVerified": True,
         "requiredActions": list(required)}, token=token)
     uid = headers["Location"].rsplit("/", 1)[1]
@@ -440,8 +456,165 @@ def x509_main():
     sys.exit(1 if failures else 0)
 
 
+# ── Impersonation ──
+
+IMP_REASON = "smoke reason 7f3a"  # must never reach a token, an event or Keycloak's log
+
+
+def rfc3339(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def claims_of(jwt):
+    payload = jwt.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def tokens_of(code, client=CLIENT):
+    tok, _ = http("POST", f"{KC}/realms/{REALM}/protocol/openid-connect/token", {
+        "grant_type": "authorization_code", "client_id": client, "code": code, "redirect_uri": REDIRECT}, form=True)
+    return claims_of(tok["id_token"]), claims_of(tok["access_token"])
+
+
+def write_impersonation(pending, sessions):
+    doc = {"version": 1, "allowed": True, "written": rfc3339(time.time()),
+           "clients": ["portcullis-forward-auth", CLIENT], "pending": pending, "sessions": sessions, "notices": {}}
+    path = os.path.join(HUB_DATA, "impersonation.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+    time.sleep(2)  # a bind mount's cached attributes (Docker Desktop)
+
+
+def records(imp_id, sid, created):
+    p = {"id": imp_id, "admin": "root", "admin_sid": sid, "target": "alice", "reason": IMP_REASON,
+         "fresh": "security_key", "fresh_at": rfc3339(created - 5), "created": rfc3339(created), "until": rfc3339(created + 1800)}
+    s = {"id": imp_id, "admin": "root", "target": "alice", "reason": IMP_REASON,
+         "started": rfc3339(created), "until": rfc3339(created + 1800), "ended": None}
+    return p, s
+
+
+def open_start(page, url):
+    """The browser opens a start URL: the start's own answer (status, Location, body), redirects not followed into."""
+    final = page.goto(url)
+    req = final.request
+    while req.redirected_from is not None:
+        req = req.redirected_from
+    first = req.response()
+    body = first.text() if first.status != 302 else ""
+    return first.status, first.headers.get("location", ""), body
+
+
+def impersonation_main():
+    from playwright.sync_api import sync_playwright
+
+    token = admin_token()
+    base = f"{KC}/admin/realms/{REALM}"
+    _, headers = http("POST", f"{base}/groups", {"name": "lldap_admin"}, token=token)
+    gid = headers["Location"].rsplit("/", 1)[1]
+    password = secrets.token_urlsafe(18)
+    root = create_person(token, password, required=(), username="root")
+    http("PUT", f"{base}/users/{root}/groups/{gid}", token=token)
+    alice = create_person(token, None, required=())
+    write_config(["passkey_device", "passkey_synced", "password", "security_key", "yubikey_cert"], False)
+    time.sleep(2)
+
+    server = HTTPServer(("127.0.0.1", 18081), Callback)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    imp_id = secrets.token_hex(16)
+    start = f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={imp_id}"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        ctx = browser.new_context()
+        page = ctx.new_page()
+
+        # root signs in with the password.
+        page.goto(authorize_url(pc_method="password"))
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#password").count() == 1, "impersonation: root gets the password form")
+        page.fill("#username", "root")
+        page.fill("#password", password)
+        page.locator("#kc-login").click()
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1])
+        check(code is not None, "impersonation: root signed in")
+        root_amr = tokens_of(code)[0].get("amr", []) if code else []
+        sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+        check(len(sessions or []) == 1, f"impersonation: root has one session ({len(sessions or [])})")
+        sid = sessions[0]["id"] if sessions else "none"
+
+        now = int(time.time())
+        p1, s1 = records(imp_id, sid, now)
+        write_impersonation([p1], [s1])
+
+        status, location, _ = open_start(page, start)
+        want = f"{KC}/oauth2/start?rd=" + urllib.parse.quote(os.environ.get("PORTCULLIS_PORTAL_URL", "http://localhost:18081/portal/"), safe="")
+        check(status == 302 and location == want, f"impersonation: start answers 302 to oauth2/start (got {status} {location!r})")
+
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed[-1]) if len(landed) > before else None
+        check(code is not None, "impersonation: the authorize after the start signs in without a form")
+        if code:
+            idt, access = tokens_of(code)
+            for name, c in (("ID token", idt), ("access token", access)):
+                check(c.get("preferred_username") == "alice", f"impersonation: {name} preferred_username alice (got {c.get('preferred_username')!r})")
+                check(c.get("act") == {"sub": "root"}, f"impersonation: {name} act.sub root (got {c.get('act')!r})")
+                check((c.get("pc_imp") or {}).get("id") == imp_id and isinstance((c.get("pc_imp") or {}).get("until"), int),
+                      f"impersonation: {name} pc_imp {{id, until}} (got {c.get('pc_imp')!r})")
+                check(IMP_REASON not in json.dumps(c), f"impersonation: {name} has no reason")
+            amr = idt.get("amr", [])
+            check(set(amr) == set(root_amr) | {"hwk"}, f"impersonation: amr = root's {root_amr} + hwk (got {amr})")
+        sessions, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+        check(not sessions, f"impersonation: root's session is gone ({sessions})")
+
+        status, _, text = open_start(page, start)
+        check(status == 403, f"impersonation: a second start is refused (got {status})")
+        check("sign-in-as link can" in text, "impersonation: the refusal page (portcullis-impersonating.ftl)")
+
+        # A start bound to root's old session, opened in the impersonated browser: refused, with the banner.
+        id2 = secrets.token_hex(16)
+        p2, s2 = records(id2, sid, int(time.time()))
+        write_impersonation([p1, p2], [s1, s2])
+        status, _, text = open_start(page, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id2}")
+        check(status == 403 and "You are signed in as alice (by root)" in text and "impersonation/stop" in text,
+              f"impersonation: a start from the impersonated browser is refused with the banner and Stop (got {status})")
+        browser.close()
+
+    # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
+    try:
+        http("POST", f"{base}/users/{alice}/impersonation", {}, token=admin_token())
+        check(False, "impersonation: the stock impersonation endpoint is refused (it answered 2xx)")
+    except urllib.error.HTTPError as e:
+        check(e.code >= 400, f"impersonation: the stock impersonation endpoint is refused ({e.code})")
+
+    token = admin_token()
+    events, _ = http("GET", f"{base}/events?type=IMPERSONATE&user={alice}&max=10", token=token)
+    events = events or []
+    hit = [e for e in events if (e.get("details") or {}).get("pc_imp") == imp_id]
+    check(len(hit) == 1 and hit[0]["details"].get("pc_act") == "root",
+          f"impersonation: one IMPERSONATE event with pc_imp and pc_act root (got {events})")
+    check(IMP_REASON not in json.dumps(events), "impersonation: no reason in the events")
+    logins = [e.get("details", {}) for e in login_events(token, alice)]
+    check(any(d.get("pc_act") == "root" for d in logins), f"impersonation: the LOGIN as alice has pc_act root (got {logins})")
+
+    lines = log_lines()
+    bad = [l for l in lines if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)]
+    check(not bad, "impersonation: no error naming portcullis in Keycloak's log" + "".join("\n    " + l for l in bad[:10]))
+    check(not [l for l in lines if IMP_REASON in l], "impersonation: the reason is never in Keycloak's log")
+    print(f"{len(failures)} failure(s)")
+    sys.exit(1 if failures else 0)
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["x509"]:
         x509_main()
+    elif sys.argv[1:] == ["impersonation"]:
+        impersonation_main()
     else:
         main()

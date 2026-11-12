@@ -13,6 +13,15 @@
 #                   the proxy settings, the truststore directory, the CRL cache
 #                   time); each leaf posted in Traefik's header. One more
 #                   leaf of each kind is revoked in its own CA's CRL (D30).
+#   run.sh impersonation
+#                   "impersonation" (contract §8.1 "Impersonation"): root
+#                   (lldap_admin) signs in with a password, the script writes
+#                   impersonation.json, opens portcullis-impersonate/start
+#                   with root's cookies and signs in to smoke as alice; the
+#                   env PORTCULLIS_PORTAL_URL / PORTCULLIS_SIGNIN_URL set.
+#
+# Every mode starts Keycloak with --features-disabled=impersonation, as core
+# does (contract §8 "Stock impersonation off").
 #
 # The admin password is random and only in the environment.
 set -euo pipefail
@@ -105,9 +114,14 @@ if [ "$MODE" = x509 ]; then
     --truststore-paths=/opt/keycloak/conf/truststores/portcullis
     --spi-crl-storage--infinispan--cache-time=60)
   echo "x509 kinds: proxy headers trusted from $trusted"
+elif [ "$MODE" = impersonation ]; then
+  export PORTCULLIS_PORTAL_URL=http://localhost:18081/portal/ PORTCULLIS_SIGNIN_URL=http://localhost:18081/signin
+  extra=(-e PORTCULLIS_PORTAL_URL -e PORTCULLIS_SIGNIN_URL)
+  kc_args=()
 else
   kc_args=()
 fi
+kc_args+=(--features-disabled=impersonation)
 
 docker rm -f "$KC_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$KC_CONTAINER" -p 127.0.0.1:18080:8080 \
@@ -126,12 +140,12 @@ if ! curl -fsS -o /dev/null "$KC_URL/realms/portcullis/.well-known/openid-config
   exit 1
 fi
 rc=0
-if [ "$MODE" = x509 ]; then
-  "$PYTHON" "$here/signin.py" x509 || rc=$?
+if [ "$MODE" = x509 ] || [ "$MODE" = impersonation ]; then
+  "$PYTHON" "$here/signin.py" "$MODE" || rc=$?
 else
   "$PYTHON" "$here/signin.py" || rc=$?
 fi
 if [ "$rc" != 0 ] && [ -z "${SMOKE_KEEP:-}" ]; then
-  docker logs "$KC_CONTAINER" 2>&1 | grep -E "portcullis|ERROR|WARN|Selections when trying|invoke authenticator|x509|X509|certificate" | tail -150
+  docker logs "$KC_CONTAINER" 2>&1 | grep -E "portcullis|ERROR|WARN|Selections when trying|invoke authenticator|x509|X509|certificate|impersonat" | tail -150
 fi
 exit "$rc"
