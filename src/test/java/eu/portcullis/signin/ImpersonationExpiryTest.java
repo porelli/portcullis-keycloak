@@ -228,4 +228,44 @@ class ImpersonationExpiryTest {
         new ImpersonationExpiry(() -> ImpersonationFile.DENY, () -> Imp.NOW, failing).run(failing.f.session);
         assertTrue(failing.marks.containsKey("u-alice"));
     }
+
+    /** The table can't be read: the file's people are still walked (first) and logged out. */
+    @Test
+    void markedFailureStillWalksNamed() {
+        Ops o = new Ops() {
+            @Override
+            public List<ImpersonatedStore.Mark> marked(KeycloakSession s, RealmModel r) {
+                throw new IllegalStateException("db down");
+            }
+        };
+        o.add("alice", "s-ended", Imp.notes(o.f, ENDED, Imp.NOW.plusSeconds(1800), "hwk"));
+        o.add("alice", "s-live", Imp.notes(o.f, Imp.ID, Imp.NOW.plusSeconds(1800), "hwk"));
+        ImpersonationFile f = file();
+        List<String> lines = ImpersonationResourceTest.captured(ImpersonationExpiry.class,
+                () -> new ImpersonationExpiry(() -> f, () -> Imp.NOW, o).run(o.f.session));
+        assertEquals(Set.of("s-ended"), o.loggedOut);
+        assertTrue(lines.stream().anyMatch(l -> l.contains("can't be read")), String.valueOf(lines));
+        assertFalse(lines.stream().anyMatch(l -> l.contains("db down")), "no exception message (values) in the log");
+    }
+
+    /** A failed unmark only warns: the other records are still walked, and the row stays for the next run. */
+    @Test
+    void unmarkFailureLeavesTheMark() {
+        Ops o = new Ops() {
+            @Override
+            public void unmark(KeycloakSession s, RealmModel r, String userId, long since) {
+                if (userId.equals("u-alice")) {
+                    throw new IllegalStateException("db down");
+                }
+                super.unmark(s, r, userId, since);
+            }
+        };
+        o.f.person("u-alice", "alice");
+        o.add("bob", "s-bob", Imp.notes(o.f, Imp.OTHER, Imp.NOW.plusSeconds(1800), "hwk"));
+        o.mark("alice", Imp.NOW.minusSeconds(600));
+        o.mark("bob", Imp.NOW.minusSeconds(600));
+        new ImpersonationExpiry(() -> ImpersonationFile.DENY, () -> Imp.NOW, o).run(o.f.session);
+        assertEquals(Set.of("s-bob"), o.loggedOut);
+        assertEquals(Set.of("u-alice"), o.marks.keySet());
+    }
 }
