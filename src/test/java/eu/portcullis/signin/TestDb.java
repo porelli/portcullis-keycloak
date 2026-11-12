@@ -53,6 +53,7 @@ final class TestDb implements AutoCloseable {
                 .managedClass(PasskeyEntity.class)
                 .managedClass(SigninStateEntity.class)
                 .managedClass(eu.portcullis.signin.store.ImpersonatedEntity.class)
+                .managedClass(eu.portcullis.signin.store.NoticeSeenEntity.class)
                 .managedClass(TestCredentials.Local.class)
                 .managedClass(TestCredentials.Federated.class)
                 .property(PersistenceConfiguration.JDBC_URL, url)

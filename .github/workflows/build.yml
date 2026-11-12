@@ -157,7 +157,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry"
+      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry portcullis-impersonation-notice"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -287,8 +287,11 @@ jobs:
       # and the session logged out); the expiry task, three phases (ended in
       # the file, record dropped, restart with an unreadable file): alice's
       # session logged out within 60 s, tokens' exp clamped to until, the held
-      # refresh token then invalid_grant; the enabled required actions exactly
-      # the smoke realm's; Keycloak's own impersonation refused; the
+      # refresh token then invalid_grant; the notice (ignored and kept in an
+      # impersonated session; alice's own sign-in shows the escaped line,
+      # Continue → a LOGIN with pc_kind sign_in; silent once seen; the
+      # generic text on an unreadable file; only a later notice's line); the
+      # enabled required actions exactly the smoke realm's; Keycloak's own impersonation refused; the
       # IMPERSONATE event with pc_imp / pc_act; no portcullis ERROR and never
       # the reason in the log.
       - name: impersonation

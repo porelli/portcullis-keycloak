@@ -122,4 +122,30 @@ class PasskeyStoreTest {
             assertThrows(IllegalArgumentException.class, () -> store.put(realm, u, credential(null), a, "passkey_synced", null, 1, Instant.now()));
         }
     }
+
+    /** PORTCULLIS_IMP_NOTICE_SEEN (contract §8.1 "The notice"): from the changelog, never seen = NEVER, only ever forward. */
+    @Test
+    void noticeSeenOnlyForward() throws Exception {
+        try (TestDb db = new TestDb()) {
+            eu.portcullis.signin.store.NoticeSeenStore s = new eu.portcullis.signin.store.NoticeSeenStore(db.em);
+            assertEquals(eu.portcullis.signin.store.NoticeSeenStore.NEVER, s.seenUntil("u-alice"));
+            assertEquals(eu.portcullis.signin.store.NoticeSeenStore.NEVER, s.seenUntil(null));
+            db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance("u-alice", 1_000L));
+            db.em.clear();
+            assertEquals(1_000L, s.seenUntil("u-alice"));
+            db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance("u-alice", 500L));
+            db.em.clear();
+            assertEquals(1_000L, s.seenUntil("u-alice"), "never back");
+            db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance("u-alice", 2_000L));
+            db.em.clear();
+            assertEquals(2_000L, s.seenUntil("u-alice"));
+            assertEquals(eu.portcullis.signin.store.NoticeSeenStore.NEVER, s.seenUntil("u-bob"));
+            // A user id longer than a UUID (a federated id) fits.
+            String fed = "f:" + "0".repeat(36) + ":" + "alice".repeat(10);
+            db.txRun(em -> new eu.portcullis.signin.store.NoticeSeenStore(em).advance(fed, 7L));
+            db.em.clear();
+            assertEquals(7L, s.seenUntil(fed));
+            db.txRun(em -> new PasskeyStore(em).selfCheck());
+        }
+    }
 }

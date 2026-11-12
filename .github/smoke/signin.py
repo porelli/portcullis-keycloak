@@ -491,9 +491,9 @@ def tokens_of(code, client=CLIENT):
     return claims_of(tok["id_token"]), claims_of(tok["access_token"])
 
 
-def write_impersonation(pending, sessions):
+def write_impersonation(pending, sessions, notices=None):
     doc = {"version": 1, "allowed": True, "written": rfc3339(time.time()),
-           "clients": ["portcullis-forward-auth", CLIENT], "pending": pending, "sessions": sessions, "notices": {}}
+           "clients": ["portcullis-forward-auth", CLIENT], "pending": pending, "sessions": sessions, "notices": notices or {}}
     path = os.path.join(HUB_DATA, "impersonation.json")
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -520,6 +520,154 @@ def open_start(page, url):
     first = req.response()
     body = first.text() if first.status != 302 else ""
     return first.status, first.headers.get("location", ""), body
+
+
+NOTICE_REASON = "<b>notice</b> reason 3c9e"  # escaped on the page; never in Keycloak's log
+NOTICE = "portcullis-impersonation-notice"
+
+
+def notice_record(started, minutes, reason=NOTICE_REASON, apps=None):
+    return {"id": secrets.token_hex(16), "admin": "root", "started": rfc3339(started), "ended": rfc3339(started + minutes * 60),
+            "reason": reason, "apps": apps if apps is not None else
+            [{"name": "Gitea", "own_session": False}, {"name": "Nextcloud", "own_session": True}]}
+
+
+def notice_line(rec, minutes):
+    """ImpersonationNotice.line, contract §8.1 "The notice"."""
+    tm = time.strptime(rec["started"], "%Y-%m-%dT%H:%M:%SZ")
+    apps = rec["apps"]
+    out = (f"{rec['admin']} signed in as you on {tm.tm_mday} {time.strftime('%b %Y %H:%M', tm)} UTC for {minutes} min: "
+           f"{rec['reason']}. Apps opened: " + (", ".join(a["name"] for a in apps) + "." if apps else "none."))
+    for a in apps:
+        if a["own_session"]:
+            out += f" {a['name']} keeps its own session and may have stayed signed in longer."
+    return out
+
+
+def require_notice(base, uid):
+    u, _ = http("GET", f"{base}/users/{uid}", token=admin_token())
+    u["requiredActions"] = [NOTICE]
+    http("PUT", f"{base}/users/{uid}", u, token=admin_token())
+
+
+def required_actions(base, uid):
+    u, _ = http("GET", f"{base}/users/{uid}", token=admin_token())
+    return u.get("requiredActions") or []
+
+
+def password_sign_in(pg, username, password):
+    pg.goto(authorize_url(pc_method="password"))
+    pg.wait_for_load_state("domcontentloaded")
+    pg.fill("#username", username)
+    pg.fill("#password", password)
+    pg.locator("#kc-login").click()
+
+
+def latest_login(token, uid, since_ms):
+    hits = [e for e in login_events(token, uid) if e.get("time", 0) >= since_ms]
+    return max(hits, key=lambda e: e["time"]).get("details", {}) if hits else None
+
+
+def notice_phase(p, base, root, root_password, alice):
+    """D45 / F12: the person's notice at their own next sign-in; never in an impersonated session."""
+    alice_password = secrets.token_urlsafe(18)
+    http("PUT", f"{base}/users/{alice}/reset-password", {"type": "password", "value": alice_password, "temporary": False},
+         token=admin_token())
+    first = notice_record(int(time.time()) - 3600, 26)
+    notices = {"alice": [first]}
+
+    # In an impersonated session the action is ignored: root's browser signs in as alice without the notice, and it stays.
+    b = p.chromium.launch()
+    pg = b.new_context().new_page()
+    password_sign_in(pg, "root", root_password)
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+    imp_id = secrets.token_hex(16)
+    pn, sn = records(imp_id, mine[0]["id"] if mine else "none", int(time.time()))
+    write_impersonation([pn], [sn], notices)
+    require_notice(base, alice)
+    status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={imp_id}")
+    check(status == 302, f"notice: an impersonation started (got {status})")
+    before = len(landed)
+    pg.goto(authorize_url())
+    pg.wait_for_load_state("domcontentloaded")
+    check(len(landed) > before and pg.locator("#portcullis-impersonation-notice").count() == 0,
+          "notice: an impersonated session signs in without the notice")
+    check(required_actions(base, alice) == [NOTICE], f"notice: the action is kept for alice ({required_actions(base, alice)})")
+    b.close()
+    write_impersonation([], [dict(sn, ended=rfc3339(time.time()))], notices)
+
+    def own_sign_in(what):
+        b = p.chromium.launch()
+        pg = b.new_context().new_page()
+        mark = int(time.time() * 1000) - 1000
+        before = len(landed)
+        password_sign_in(pg, "alice", alice_password)
+        try:
+            pg.wait_for_selector("#portcullis-impersonation-notice", timeout=15000)
+        except Exception:
+            pass
+        return b, pg, mark, before
+
+    def after_login(what, mark):
+        d = latest_login(admin_token(), alice, mark)
+        got = {k: (d or {}).get(k) for k in ("pc_kind", "pc_methods")}
+        check(got == {"pc_kind": "sign_in", "pc_methods": "password"},
+              f"notice: {what}: the LOGIN keeps its history details (F12) (got {d})")
+
+    # alice's own sign-in: the line, escaped; Continue reaches the client.
+    b, pg, mark, before = own_sign_in("first")
+    lines = pg.locator(".portcullis-notice-line").all_inner_texts()
+    want = notice_line(first, 26)
+    check([l.strip() for l in lines] == [want], f"notice: alice's sign-in shows the line {want!r} (got {lines})")
+    html = pg.content()
+    check("&lt;b&gt;notice&lt;/b&gt;" in html and "<b>notice</b>" not in html, "notice: the reason is escaped")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before and code_of(landed[-1]) is not None, "notice: Continue reaches the client")
+    check(required_actions(base, alice) == [], f"notice: Continue completes the action ({required_actions(base, alice)})")
+    after_login("Continue", mark)
+    b.close()
+
+    # Seen: the action added again → it completes silently, no page.
+    require_notice(base, alice)
+    b, pg, mark, before = own_sign_in("seen")
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before and pg.locator("#portcullis-impersonation-notice").count() == 0,
+          "notice: a second sign-in shows no notice")
+    check(required_actions(base, alice) == [], "notice: the silent completion removes the action")
+    after_login("silent", mark)
+    b.close()
+
+    # An unreadable file: the generic text, Continue completes (the seen time unchanged).
+    require_notice(base, alice)
+    path = os.path.join(HUB_DATA, "impersonation.json")
+    with open(path + ".tmp", "w") as f:
+        f.write("{")
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+    time.sleep(2)
+    b, pg, mark, before = own_sign_in("generic")
+    text = pg.locator("#portcullis-impersonation-notice").inner_text() if pg.locator("#portcullis-impersonation-notice").count() else ""
+    check("An administrator signed in as you. Your Sign-in page's history has the details." in text,
+          f"notice: an unreadable file shows the generic text (got {text!r})")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before, "notice: Continue past the generic text reaches the client")
+    after_login("generic", mark)
+    b.close()
+
+    # A later notice: only the new line (the first stays seen).
+    second = notice_record(int(time.time()) - 600, 5, reason="checking the backup", apps=[])
+    write_impersonation([], [], {"alice": [first, second]})
+    require_notice(base, alice)
+    b, pg, mark, before = own_sign_in("later")
+    lines = [l.strip() for l in pg.locator(".portcullis-notice-line").all_inner_texts()]
+    check(lines == [notice_line(second, 5)], f"notice: only the unseen notice is shown (got {lines})")
+    pg.locator("#portcullis-notice-continue").click()
+    pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+    check(len(landed) > before, "notice: Continue reaches the client")
+    b.close()
 
 
 def impersonation_main():
@@ -716,6 +864,8 @@ def impersonation_main():
                           f"impersonation expiry ({how}): the refresh after the logout gets invalid_grant (got {e.code} {err})")
             b.close()
 
+        notice_phase(p, base, root, password, alice)
+
     # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
     try:
         http("POST", f"{base}/users/{alice}/impersonation", {}, token=admin_token())
@@ -749,6 +899,7 @@ def impersonation_main():
           "impersonation: the expiry's backchannel logout worked (no fallback removal)")
     check(not bad, "impersonation: no error naming portcullis in Keycloak's log" + "".join("\n    " + l for l in bad[:10]))
     check(not [l for l in lines if IMP_REASON in l], "impersonation: the reason is never in Keycloak's log")
+    check(not [l for l in lines if NOTICE_REASON in l or "notice</b>" in l], "notice: the notice's reason is never in Keycloak's log")
     print(f"{len(failures)} failure(s)")
     sys.exit(1 if failures else 0)
 

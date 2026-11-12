@@ -11,7 +11,8 @@ import org.keycloak.models.RealmModel;
 /**
  * {@code portcullis-passkey-store} (plan D5): the extension's JPA entities and
  * the Liquibase changelog that creates {@code PORTCULLIS_PASSKEY},
- * {@code PORTCULLIS_SIGNIN_STATE} and {@code PORTCULLIS_IMPERSONATED}.
+ * {@code PORTCULLIS_SIGNIN_STATE}, {@code PORTCULLIS_IMPERSONATED} and
+ * {@code PORTCULLIS_IMP_NOTICE_SEEN}.
  */
 public final class PasskeyStoreProviderFactory implements JpaEntityProviderFactory {
     public static final String PROVIDER_ID = "portcullis-passkey-store";
@@ -21,7 +22,7 @@ public final class PasskeyStoreProviderFactory implements JpaEntityProviderFacto
     private static final class Provider implements JpaEntityProvider {
         @Override
         public List<Class<?>> getEntities() {
-            return List.of(PasskeyEntity.class, SigninStateEntity.class, ImpersonatedEntity.class);
+            return List.of(PasskeyEntity.class, SigninStateEntity.class, ImpersonatedEntity.class, NoticeSeenEntity.class);
         }
 
         @Override

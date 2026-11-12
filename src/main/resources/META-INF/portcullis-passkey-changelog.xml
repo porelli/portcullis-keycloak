@@ -70,7 +70,8 @@
     </changeSet>
 
     <!-- Sign-in part 3's changeSet (contract §8.1 "Impersonation"): every part-3 table goes here until it deploys.
-         PORTCULLIS_IMPERSONATED: the people signed in as, until none of their sessions is impersonated ("Ending"). -->
+         PORTCULLIS_IMPERSONATED: the people signed in as, until none of their sessions is impersonated ("Ending").
+         PORTCULLIS_IMP_NOTICE_SEEN: per person, the latest impersonation end their notice showed ("The notice"). -->
     <changeSet author="portcullis" id="portcullis-impersonation-1">
         <createTable tableName="PORTCULLIS_IMPERSONATED">
             <column name="USER_ID" type="VARCHAR(255)">
@@ -90,5 +91,14 @@
         <createIndex tableName="PORTCULLIS_IMPERSONATED" indexName="IDX_PORTCULLIS_IMPERSONATED_REALM">
             <column name="REALM_ID"/>
         </createIndex>
+        <createTable tableName="PORTCULLIS_IMP_NOTICE_SEEN">
+            <column name="USER_ID" type="VARCHAR(255)">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_PORTCULLIS_IMP_NOTICE_SEEN"/>
+            </column>
+            <!-- epoch milliseconds of the latest ended shown -->
+            <column name="SEEN_UNTIL" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
     </changeSet>
 </databaseChangeLog>
