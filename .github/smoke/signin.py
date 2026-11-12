@@ -803,6 +803,8 @@ def impersonation_main():
 
         # The expiry task (every 15 s): ended in the file, then an unreadable file (fail closed).
         for how in ("ended", "dropped", "restart"):
+            known, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+            known = {x["id"] for x in known or []}
             b = p.chromium.launch()
             c = b.new_context()
             pg = c.new_page()
@@ -813,14 +815,17 @@ def impersonation_main():
             pg.locator("#kc-login").click()
             pg.wait_for_url("http://localhost:18081/**", timeout=30000)
             mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
-            sid_n = newest_session(mine)
+            # This browser's session: the one that wasn't there before (Keycloak's start times are whole
+            # seconds, so the previous browser's may tie with it).
+            sid_n = newest_session([x for x in mine or [] if x["id"] not in known])
             id_n = secrets.token_hex(16)
             created_n = int(time.time())
             # 150 s: shorter than the 300 s access-token lifespan, so the clamp to until shows.
             pn, sn = records(id_n, sid_n, created_n, life=150)
             write_impersonation([pn], [sn])
             status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id_n}")
-            check(status == 302, f"impersonation expiry ({how}): started (got {status})")
+            why = [l for l in log_lines() if f"impersonation {id_n} refused" in l][-1:] if status != 302 else []
+            check(status == 302, f"impersonation expiry ({how}): started (got {status}{' ' + why[0] if why else ''})")
             # M6 / M3: an app holding alice's tokens (with a refresh token).
             before = len(landed)
             pg.goto(authorize_url())
