@@ -85,6 +85,10 @@ final class Flow {
     UserSessionModel attached;
     AuthenticatorConfigModel authenticatorConfig;
     String clientId = "nextcloud";
+    /** This request's URI (default: the authorize endpoint with its query). */
+    URI requestUri = BASE.resolve("realms/portcullis/protocol/openid-connect/auth?client_id=nextcloud&state=s1");
+    /** The authentication selections were cleared (no "Try another way"). */
+    boolean selectionsCleared;
     boolean bruteForceProtected = true;
 
     /** The root authentication session's id (Keycloak: the user session's id, AuthenticationSessionManager.getUserSession). */
@@ -226,7 +230,7 @@ final class Flow {
                 .as(jakarta.ws.rs.core.HttpHeaders.class);
         HttpRequest http = Fake.named("http").on("getDecodedFormParameters", a -> form)
                 .ret("getHttpHeaders", httpHeaders).as(HttpRequest.class);
-        UriInfo uri = Fake.named("uri").ret("getBaseUri", BASE).as(UriInfo.class);
+        UriInfo uri = Fake.named("uri").ret("getBaseUri", BASE).on("getRequestUri", a -> requestUri).as(UriInfo.class);
         AuthenticationExecutionModel execution = new AuthenticationExecutionModel();
         execution.setId("exec-current");
         AuthenticationFlowModel top = new AuthenticationFlowModel();
@@ -282,6 +286,7 @@ final class Flow {
                     List<org.keycloak.authentication.AuthenticationSelectionOption> l =
                             (List<org.keycloak.authentication.AuthenticationSelectionOption>) a[0];
                     selections = l;
+                    selectionsCleared = l != null && l.isEmpty();
                     return null;
                 })
                 .on("getStatus", a -> status)

@@ -435,7 +435,10 @@ class TemplateAuthenticatorTest {
         impersonated(Configs.client(Configs.DEFAULT_METHODS, false, Configs.STRONG), ops[0], ImpersonationFile.DENY)
                 .authenticate(f.context);
         assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
-        assertEquals(ImpersonatingPage.ENDED, ((ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+        ImpersonatingPage ended = (ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
+        assertEquals(ImpersonatingPage.ENDED, ended.getMode());
+        assertEquals(f.requestUri.toString(), ended.getSignInAgainUrl());
+        assertEquals(null, ended.getStopUrl());
         assertEquals(List.of(f.rootId), ops[0].loggedOut);
     }
 }

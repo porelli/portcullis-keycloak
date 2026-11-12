@@ -1,6 +1,7 @@
 package eu.portcullis.signin;
 
 import jakarta.ws.rs.core.Response;
+import java.net.URI;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -63,8 +64,11 @@ final class ImpersonationGuard {
         /** The identity cookie's session (null: none or invalid). */
         AuthenticationManager.AuthResult identity(AuthenticationFlowContext c);
 
-        /** Logs the session out (and the browser's identity cookie with it). */
+        /** Logs the session out (and expires the browser's identity, remember-me and auth-session cookies). */
         void logOut(AuthenticationFlowContext c, UserSessionModel us);
+
+        /** A redirect (no-store) sending the browser to start the authorize again. */
+        Response restart(AuthenticationFlowContext c, URI to);
     }
 
     static final Ops KEYCLOAK = new Ops() {
@@ -77,13 +81,27 @@ final class ImpersonationGuard {
         public void logOut(AuthenticationFlowContext c, UserSessionModel us) {
             logOutNow(c, us);
         }
+
+        @Override
+        public Response restart(AuthenticationFlowContext c, URI to) {
+            return restartResponse(to);
+        }
     };
+
+    /** 302 to the URI, never cached. */
+    static Response restartResponse(URI to) {
+        jakarta.ws.rs.core.CacheControl none = new jakarta.ws.rs.core.CacheControl();
+        none.setNoStore(true);
+        return Response.status(Response.Status.FOUND).location(to).cacheControl(none).build();
+    }
 
     /** Keycloak's own logout of us in this request (also its backchannel logout to the apps), the identity cookie expired. */
     static void logOutNow(AuthenticationFlowContext c, UserSessionModel us) {
         KeycloakSession s = c.getSession();
         KeycloakContext k = s.getContext();
         AuthenticationManager.expireIdentityCookie(s);
+        AuthenticationManager.expireRememberMeCookie(s);
+        AuthenticationManager.expireAuthSessionCookie(s);
         AuthenticationManager.backchannelLogout(s, c.getRealm(), us, k.getUri(), k.getConnection(), k.getHttpRequest().getHttpHeaders(), true);
     }
 
@@ -203,16 +221,35 @@ final class ImpersonationGuard {
     }
 
     /**
-     * Answers a REFUSE or ENDED result: {@code portcullis-impersonating.ftl}
-     * (mode refused with the banner, or ended), 403, with
-     * {@code forceChallenge} — {@code auth-cookie} is an ALTERNATIVE, and a
-     * plain challenge would let the next alternative run. Logged with the id
-     * and why, never the reason.
+     * Answers a REFUSE or ENDED result, always with {@code forceChallenge}
+     * ({@code auth-cookie} is an ALTERNATIVE: a plain challenge would let
+     * the next alternative run). Logged with the id and why, never the
+     * reason.
+     * <ul>
+     * <li>REFUSE: {@code portcullis-impersonating.ftl} mode refused, 403,
+     * the banner and Stop.</li>
+     * <li>ENDED at {@link Stage#COOKIE} in the authorize request (the
+     * browser coming back after Stop): the session is already logged out and
+     * its cookies expired, and the same authorize starts again without them —
+     * the normal sign-in page. The flow doesn't continue in this request:
+     * Keycloak's logout removed its root authentication session (whose id is
+     * the user session's).</li>
+     * <li>ENDED otherwise (the template step, a later request): mode ended,
+     * 403, "Sign in again" (that authorize again, or Keycloak's restart of
+     * this client's authentication), no Stop and no "Try another way".</li>
+     * </ul>
      */
-    static void answer(AuthenticationFlowContext c, Result r, Function<String, String> env, Instant now) {
+    static void answer(AuthenticationFlowContext c, Result r, Function<String, String> env, Instant now, Ops ops, Stage stage) {
         ClientModel client = c.getAuthenticationSession().getClient();
         String clientId = client == null ? null : client.getClientId();
         if (r.verdict() == Verdict.ENDED) {
+            URI authorize = authorizeRequest(c);
+            if (stage == Stage.COOKIE && authorize != null) {
+                LOG.infof("portcullis: impersonation %s ended: %s's session logged out; the authorize for %s starts again",
+                        r.info().id(), r.person(), clientId);
+                c.forceChallenge(ops.restart(c, authorize));
+                return;
+            }
             LOG.infof("portcullis: impersonation %s ended: %s's session logged out (sign-in to %s)", r.info().id(), r.person(), clientId);
         } else {
             LOG.infof("portcullis: impersonation %s: sign-in to %s refused: %s", r.info().id(), clientId, r.why());
@@ -220,15 +257,55 @@ final class ImpersonationGuard {
         c.forceChallenge(page(c, r, env, now));
     }
 
+    /** This request's URI when it is the realm's OIDC authorize endpoint (with its query), else null. */
+    static URI authorizeRequest(AuthenticationFlowContext c) {
+        try {
+            URI u = c.getUriInfo().getRequestUri();
+            String want = "/realms/" + c.getRealm().getName() + "/protocol/openid-connect/auth";
+            return u != null && u.getRawPath() != null && u.getRawPath().endsWith(want) ? u : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Sign in again: the authorize again, else Keycloak's restart of this client's authentication. */
+    static String signInAgain(AuthenticationFlowContext c) {
+        URI authorize = authorizeRequest(c);
+        if (authorize != null) {
+            return authorize.toString();
+        }
+        try {
+            AuthenticationSessionModel a = c.getAuthenticationSession();
+            org.keycloak.common.util.KeycloakUriBuilder b = org.keycloak.common.util.KeycloakUriBuilder.fromUri(c.getUriInfo().getBaseUri())
+                    .path("realms/{realm}/login-actions/restart");
+            if (a.getClient() != null) {
+                b.queryParam(Constants.CLIENT_ID, a.getClient().getClientId());
+            }
+            if (a.getTabId() != null) {
+                b.queryParam(Constants.TAB_ID, a.getTabId());
+            }
+            return b.build(c.getRealm().getName()).toString();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     /** The page of a REFUSE or ENDED result. */
     static Response page(AuthenticationFlowContext c, Result r, Function<String, String> env, Instant now) {
         String stop = Impersonation.stopUrl(env);
-        LoginFormsProvider forms = c.form();
         ImpersonatingPage page;
         if (r.verdict() == Verdict.ENDED) {
-            page = ImpersonatingPage.ended(r.person(), stop);
+            page = ImpersonatingPage.ended(r.person(), signInAgain(c));
+            try {
+                c.setAuthenticationSelections(java.util.List.of()); // no "Try another way"
+            } catch (RuntimeException e) {
+                // the link stays; never a reason to fail the page
+            }
         } else {
             page = ImpersonatingPage.refused(r.person(), stop);
+        }
+        LoginFormsProvider forms = c.form();
+        if (r.verdict() != Verdict.ENDED) {
             ImpersonationBanner banner = ImpersonationBanner.of(r.info(), r.person(), stop, now);
             if (banner != null) {
                 forms.setAttribute(ImpersonationResource.BANNER, banner);

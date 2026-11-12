@@ -52,8 +52,10 @@ has pc_imp and pc_act and no reason, the LOGIN as alice pc_act root. The
 guard (D42): in the impersonated browser an authorize for smoke-fresh (not in
 the file's clients), with pc_method, prompt=login, max_age=0 or acr_values
 gets the refused page (403, banner) and nothing is issued, while smoke still
-signs in; with the record gone from the file the next authorize gets the
-ended page and alice's session is logged out at once. The expiry task: a
+signs in; with the record gone from the file (as after Stop) the next
+authorize logs alice's session out at once and starts again without it: the
+normal sign-in page (never the ended page), where root signs in again as
+root. The expiry task: a
 second and a third impersonation, each left alone while live (one 15 s run),
 then the record ended in the file, the record dropped from a readable file
 (only the extension's PORTCULLIS_IMPERSONATED still names alice), or
@@ -765,16 +767,30 @@ def impersonation_main():
         page.wait_for_url("http://localhost:18081/**", timeout=30000)
         check(len(landed) > before and code_of(landed[-1]) is not None, "impersonation guard: the listed client still signs in")
 
-        # Ended (the record gone from the file): the next authorize shows the ended page and logs the session out at once.
+        # Ended (the record gone from the file, as after Stop): the next authorize logs the session out at once and
+        # starts again without it — the normal sign-in page, never the ended page, nothing issued as alice.
         write_impersonation([], [])
         before = len(landed)
         page.goto(authorize_url())
         page.wait_for_load_state("domcontentloaded")
         text = page.content()
-        check(len(landed) == before and "Your session as alice has ended" in text,
-              "impersonation guard: a session no longer live gets the ended page, nothing issued")
+        check(len(landed) == before and "has ended" not in text
+              and (page.locator("#username").count() == 1 or page.locator("#authenticateWebAuthnButton").count() == 1),
+              "impersonation guard: after the end the next authorize shows the sign-in page (not the ended page), nothing issued")
         alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
         check(not alive, f"impersonation guard: the ended session is logged out ({alive})")
+        # The administrator signs in again in that browser: as root, never as alice.
+        page.goto(authorize_url(pc_method="password"))
+        page.wait_for_load_state("domcontentloaded")
+        before = len(landed)
+        if page.locator("#password").count() == 1:
+            page.fill("#username", "root")
+            page.fill("#password", password)
+            page.locator("#kc-login").click()
+            page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        again = tokens_of(code_of(landed[-1]))[0] if len(landed) > before and code_of(landed[-1]) else {}
+        check(again.get("preferred_username") == "root" and "act" not in again and "pc_imp" not in again,
+              f"impersonation guard: signing in again after the end gives root's own session (got {again.get('preferred_username')!r})")
         browser.close()
 
         # The expiry task (every 15 s): ended in the file, then an unreadable file (fail closed).

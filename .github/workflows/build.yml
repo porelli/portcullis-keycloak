@@ -283,8 +283,9 @@ jobs:
       # root's cookies (302 to oauth2/start); the token for smoke is alice's
       # with act.sub root, pc_imp.id and root's amr + hwk; root's session
       # gone; a second start 403; the guard (an unlisted client, pc_method,
-      # prompt=login, max_age, acr refused; an ended record → the ended page
-      # and the session logged out); the expiry task, three phases (ended in
+      # prompt=login, max_age, acr refused; an ended record → the session
+      # logged out, the authorize again: the sign-in page, root signs in
+      # again as root); the expiry task, three phases (ended in
       # the file, record dropped, restart with an unreadable file): alice's
       # session logged out within 60 s, tokens' exp clamped to until, the held
       # refresh token then invalid_grant; the notice (ignored and kept in an

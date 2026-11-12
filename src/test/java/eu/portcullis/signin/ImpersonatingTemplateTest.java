@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 /** portcullis-impersonating.ftl: the three modes, the banner and Stop, every value escaped (D42, D43). */
 class ImpersonatingTemplateTest {
     static final String STOP = "https://people.example.com/impersonation/stop";
+    static final String AGAIN = "https://auth.example.com/realms/portcullis/protocol/openid-connect/auth?client_id=x";
     static final Instant NOW = Instant.parse("2026-11-12T14:10:00Z");
 
     private static String render(ImpersonatingPage page, ImpersonationBanner banner) throws Exception {
@@ -39,7 +40,7 @@ class ImpersonatingTemplateTest {
 
     @Test
     void bannerInEveryMode() throws Exception {
-        for (ImpersonatingPage page : List.of(ImpersonatingPage.refused("alice", STOP), ImpersonatingPage.ended("alice", STOP),
+        for (ImpersonatingPage page : List.of(ImpersonatingPage.refused("alice", STOP),
                 ImpersonatingPage.needs("Gitea", List.of("security_key", "yubikey_cert"), "root", "alice", STOP))) {
             String html = render(page, banner("checking quota"));
             assertTrue(html.contains("You are signed in as alice (by root) · reason “checking quota” · 27 min left"), html);
@@ -48,15 +49,18 @@ class ImpersonatingTemplateTest {
         }
         String refused = render(ImpersonatingPage.refused("alice", STOP), banner("x y z"));
         assertTrue(refused.contains("Not while you are signed in as alice"), refused);
-        String ended = render(ImpersonatingPage.ended("alice", STOP), null);
+        String ended = render(ImpersonatingPage.ended("alice", AGAIN), null);
         assertTrue(ended.contains("Your session as alice has ended."), ended);
+        // Ended: Sign in again (the authorize again), never Stop.
+        assertTrue(ended.contains("href=\"" + AGAIN + "\">Sign in again</a>"), ended);
+        assertFalse(ended.contains(">Stop</a>"), ended);
         String needs = render(ImpersonatingPage.needs("Gitea", List.of("security_key", "yubikey_cert"), "root", "alice", STOP), null);
         assertTrue(needs.contains("Gitea needs a security key or a YubiKey certificate. root&#39;s sign-in didn&#39;t use them, and a session as alice can&#39;t add one: Stop, sign in with them, and start again."), needs);
     }
 
     @Test
     void escapesValues() throws Exception {
-        String html = render(ImpersonatingPage.ended("<i>", STOP), banner("<script>x</script> & \"q\""));
+        String html = render(ImpersonatingPage.ended("<i>", AGAIN), banner("<script>x</script> & \"q\""));
         assertFalse(html.contains("<script>"), html);
         assertFalse(html.contains("<i>"), html);
         assertTrue(html.contains("&lt;script&gt;x&lt;/script&gt; &amp; &quot;q&quot;"), html);

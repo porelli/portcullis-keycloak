@@ -74,12 +74,17 @@ public class CookieAuthenticator extends org.keycloak.authentication.authenticat
             public void logOut(AuthenticationFlowContext c, UserSessionModel us) {
                 CookieAuthenticator.this.logOut(c, us);
             }
+
+            @Override
+            public jakarta.ws.rs.core.Response restart(AuthenticationFlowContext c, java.net.URI to) {
+                return CookieAuthenticator.this.restart(c, to);
+            }
         };
         Instant now = clock.get();
         ImpersonationGuard.Result guard = ImpersonationGuard.check(context, impersonations, now, ops, ImpersonationGuard.Stage.COOKIE);
         switch (guard.verdict()) {
             case REFUSE, ENDED -> {
-                ImpersonationGuard.answer(context, guard, env, now);
+                ImpersonationGuard.answer(context, guard, env, now, ops, ImpersonationGuard.Stage.COOKIE);
                 return;
             }
             case ALLOW -> {
@@ -87,7 +92,7 @@ public class CookieAuthenticator extends org.keycloak.authentication.authenticat
                 if (context.getStatus() != FlowStatus.SUCCESS) {
                     // The cookie alone must sign in (an acr step-up, a forked flow …: never a new method).
                     ImpersonationGuard.answer(context, new ImpersonationGuard.Result(ImpersonationGuard.Verdict.REFUSE, guard.info(),
-                            guard.person(), "the SSO cookie didn't sign in"), env, now);
+                            guard.person(), "the SSO cookie didn't sign in"), env, now, ops, ImpersonationGuard.Stage.COOKIE);
                 }
                 return;
             }
@@ -133,6 +138,11 @@ public class CookieAuthenticator extends org.keycloak.authentication.authenticat
     /** Logs out an impersonated session that isn't live (Keycloak's own logout in this request). */
     protected void logOut(AuthenticationFlowContext context, UserSessionModel us) {
         ImpersonationGuard.logOutNow(context, us);
+    }
+
+    /** The redirect that starts the authorize again (after an ended session's logout). */
+    protected jakarta.ws.rs.core.Response restart(AuthenticationFlowContext context, java.net.URI to) {
+        return ImpersonationGuard.restartResponse(to);
     }
 
     /** The SSO session of the identity cookie (null: none or invalid). */

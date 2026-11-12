@@ -32,9 +32,17 @@ class CookieAuthenticatorTest {
             this.sso = sso;
         }
 
+        final java.util.List<java.net.URI> restarted = new java.util.ArrayList<>();
+
         @Override
         protected void logOut(AuthenticationFlowContext context, UserSessionModel us) {
             loggedOut.add(us.getId());
+        }
+
+        @Override
+        protected jakarta.ws.rs.core.Response restart(AuthenticationFlowContext context, java.net.URI to) {
+            restarted.add(to);
+            return null;
         }
 
         @Override
@@ -188,8 +196,11 @@ class CookieAuthenticatorTest {
         Under a = new Under(Configs.plain(), us, Imp.file(Imp.ID, "alice", "\"" + Imp.NOW.minusSeconds(3) + "\"", "portcullis-forward-auth"));
         a.authenticate(f.context);
         assertEquals(java.util.List.of(us.getId()), a.loggedOut);
+        // After Stop: the same authorize again without the session — the normal sign-in page, never the ended page.
+        assertEquals(java.util.List.of(f.requestUri), a.restarted);
         assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
-        assertEquals(ImpersonatingPage.ENDED, ((ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+        assertNull(f.page);
         assertFalse(a.stockRan);
+        assertNull(f.user, "never a sign-in as the person");
     }
 }

@@ -84,6 +84,8 @@ final class Imp {
     static final class Ops implements ImpersonationGuard.Ops {
         UserSessionModel cookie;
         final List<String> loggedOut = new ArrayList<>();
+        /** Where the browser was sent to start the authorize again. */
+        final List<java.net.URI> restarted = new ArrayList<>();
 
         Ops(UserSessionModel cookie) {
             this.cookie = cookie;
@@ -97,6 +99,12 @@ final class Imp {
         @Override
         public void logOut(AuthenticationFlowContext c, UserSessionModel us) {
             loggedOut.add(us.getId());
+        }
+
+        @Override
+        public jakarta.ws.rs.core.Response restart(AuthenticationFlowContext c, java.net.URI to) {
+            restarted.add(to);
+            return null;
         }
     }
 }

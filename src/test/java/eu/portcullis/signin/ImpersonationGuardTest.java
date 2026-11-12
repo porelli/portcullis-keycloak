@@ -192,30 +192,89 @@ class ImpersonationGuardTest {
 
     @Test
     void pagesForceChallenge() {
-        for (ImpersonationGuard.Verdict v : List.of(ImpersonationGuard.Verdict.REFUSE, ImpersonationGuard.Verdict.ENDED)) {
+        // REFUSE (either step): the refused page with the banner and Stop, via forceChallenge.
+        for (ImpersonationGuard.Stage stage : ImpersonationGuard.Stage.values()) {
             Flow f = aliceFlow("account-console");
             Flow.Person alice = f.person("u-alice", "alice");
+            f.user = alice.model;
+            f.authNotes.put(CookieAuthenticator.SSO_NOTE, "true");
             Imp.Ops ops = new Imp.Ops(Imp.alice(f, alice, "hwk"));
-            ImpersonationFile file = v == ImpersonationGuard.Verdict.ENDED ? ImpersonationFile.DENY : LIVE;
-            ImpersonationGuard.Result r = check(f, file, ops, ImpersonationGuard.Stage.COOKIE);
-            assertEquals(v, r.verdict());
-            ImpersonationGuard.answer(f.context, r, k -> "https://people.example.com/signin", Imp.NOW);
+            ImpersonationGuard.Result r = check(f, LIVE, ops, stage);
+            assertEquals(ImpersonationGuard.Verdict.REFUSE, r.verdict());
+            ImpersonationGuard.answer(f.context, r, k -> "https://people.example.com/signin", Imp.NOW, ops, stage);
             // auth-cookie is an ALTERNATIVE: a plain challenge would let the next alternative run.
-            assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, v.name());
+            assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
             assertEquals(ImpersonationResource.PAGE, f.page);
             ImpersonatingPage page = (ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
-            assertEquals(v == ImpersonationGuard.Verdict.ENDED ? ImpersonatingPage.ENDED : ImpersonatingPage.REFUSED, page.getMode());
+            assertEquals(ImpersonatingPage.REFUSED, page.getMode());
             assertEquals("alice", page.getPerson());
             assertFalse(page.isStart());
             assertEquals("https://people.example.com/impersonation/stop", page.getStopUrl());
             ImpersonationBanner banner = (ImpersonationBanner) f.formAttributes.get(ImpersonationResource.BANNER);
-            if (v == ImpersonationGuard.Verdict.REFUSE) {
-                assertEquals("root", banner.getAdmin());
-                assertEquals(Imp.REASON, banner.getReason());
-            } else {
-                assertNull(banner, "an ended session has no banner");
-            }
+            assertEquals("root", banner.getAdmin());
+            assertEquals(Imp.REASON, banner.getReason());
         }
+    }
+
+    /**
+     * After Stop (e2e): at the cookie step an ENDED session is logged out and
+     * the same authorize starts again without it — the normal sign-in page,
+     * never the ended page, never a sign-in as the person.
+     */
+    @Test
+    void endedAtCookieStepRestartsTheAuthorize() {
+        Flow f = aliceFlow("portcullis-forward-auth");
+        UserSessionModel us = Imp.alice(f, f.person("u-alice", "alice"), "hwk");
+        Imp.Ops ops = new Imp.Ops(us);
+        ImpersonationGuard.Result r = check(f, ImpersonationFile.DENY, ops, ImpersonationGuard.Stage.COOKIE);
+        assertEquals(ImpersonationGuard.Verdict.ENDED, r.verdict());
+        ImpersonationGuard.answer(f.context, r, k -> "https://people.example.com/signin", Imp.NOW, ops, ImpersonationGuard.Stage.COOKIE);
+        assertEquals(List.of(us.getId()), ops.loggedOut);
+        assertEquals(List.of(f.requestUri), ops.restarted, "the same authorize, again");
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        assertNull(f.page, "no ended page");
+        assertNull(f.user);
+
+        // Not the authorize request (a later form post): the ended page with Sign in again instead.
+        Flow g = aliceFlow("portcullis-forward-auth");
+        g.requestUri = Flow.BASE.resolve("realms/portcullis/login-actions/authenticate?session_code=x&tab_id=t");
+        Imp.Ops o2 = new Imp.Ops(Imp.alice(g, g.person("u-alice", "alice"), "hwk"));
+        ImpersonationGuard.Result e = check(g, ImpersonationFile.DENY, o2, ImpersonationGuard.Stage.COOKIE);
+        ImpersonationGuard.answer(g.context, e, k -> null, Imp.NOW, o2, ImpersonationGuard.Stage.COOKIE);
+        assertTrue(o2.restarted.isEmpty());
+        assertEquals(ImpersonatingPage.ENDED, ((ImpersonatingPage) g.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+    }
+
+    /** At the template step the flow can't step aside: the ended page, Sign in again (the authorize again), no Stop, no Try another way. */
+    @Test
+    void endedAtTemplateStepSignInAgain() {
+        Flow f = aliceFlow("nextcloud");
+        Flow.Person alice = f.person("u-alice", "alice");
+        f.user = alice.model;
+        Imp.Ops ops = new Imp.Ops(Imp.alice(f, alice, "hwk"));
+        ImpersonationGuard.Result r = check(f, ImpersonationFile.DENY, ops, ImpersonationGuard.Stage.TEMPLATE);
+        assertEquals(ImpersonationGuard.Verdict.ENDED, r.verdict());
+        ImpersonationGuard.answer(f.context, r, k -> "https://people.example.com/signin", Imp.NOW, ops, ImpersonationGuard.Stage.TEMPLATE);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        assertEquals(ImpersonationResource.PAGE, f.page);
+        assertTrue(ops.restarted.isEmpty());
+        ImpersonatingPage page = (ImpersonatingPage) f.formAttributes.get(ImpersonationResource.ATTRIBUTE);
+        assertEquals(ImpersonatingPage.ENDED, page.getMode());
+        assertEquals(f.requestUri.toString(), page.getSignInAgainUrl());
+        assertNull(page.getStopUrl(), "no Stop: it has ended");
+        assertNull(f.formAttributes.get(ImpersonationResource.BANNER));
+        assertTrue(f.selectionsCleared, "no Try another way");
+
+        // A later request (not the authorize): Keycloak's restart of this client's authentication.
+        Flow g = aliceFlow("nextcloud");
+        g.requestUri = Flow.BASE.resolve("realms/portcullis/login-actions/authenticate?session_code=x");
+        Flow.Person a2 = g.person("u-alice", "alice");
+        g.user = a2.model;
+        Imp.Ops o2 = new Imp.Ops(Imp.alice(g, a2, "hwk"));
+        ImpersonationGuard.answer(g.context, check(g, ImpersonationFile.DENY, o2, ImpersonationGuard.Stage.TEMPLATE), k -> null,
+                Imp.NOW, o2, ImpersonationGuard.Stage.TEMPLATE);
+        String again = ((ImpersonatingPage) g.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getSignInAgainUrl();
+        assertTrue(again.startsWith("https://auth.example.com/realms/portcullis/login-actions/restart?client_id=nextcloud"), again);
     }
 
     @Test
@@ -224,9 +283,9 @@ class ImpersonationGuardTest {
         Imp.Ops ops = new Imp.Ops(Imp.alice(f, f.person("u-alice", "alice"), "hwk"));
         List<String> lines = ImpersonationResourceTest.captured(ImpersonationGuard.class, () -> {
             ImpersonationGuard.Result r = check(f, LIVE, ops, ImpersonationGuard.Stage.COOKIE);
-            ImpersonationGuard.answer(f.context, r, k -> null, Imp.NOW);
+            ImpersonationGuard.answer(f.context, r, k -> null, Imp.NOW, ops, ImpersonationGuard.Stage.COOKIE);
             ImpersonationGuard.Result e = check(f, ImpersonationFile.DENY, ops, ImpersonationGuard.Stage.COOKIE);
-            ImpersonationGuard.answer(f.context, e, k -> null, Imp.NOW);
+            ImpersonationGuard.answer(f.context, e, k -> null, Imp.NOW, ops, ImpersonationGuard.Stage.COOKIE);
         });
         assertFalse(lines.isEmpty());
         for (String l : lines) {

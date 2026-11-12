@@ -21,8 +21,14 @@ public final class ImpersonatingPage {
     private final String app;
     private final List<String> methods;
     private final String stopUrl;
+    private final String signInAgainUrl;
 
     private ImpersonatingPage(String mode, boolean start, String person, String admin, String app, List<String> methods, String stopUrl) {
+        this(mode, start, person, admin, app, methods, stopUrl, null);
+    }
+
+    private ImpersonatingPage(String mode, boolean start, String person, String admin, String app, List<String> methods, String stopUrl,
+            String signInAgainUrl) {
         this.mode = mode;
         this.start = start;
         this.person = person;
@@ -30,6 +36,7 @@ public final class ImpersonatingPage {
         this.app = app;
         this.methods = List.copyOf(methods);
         this.stopUrl = stopUrl;
+        this.signInAgainUrl = signInAgainUrl;
     }
 
     /** The start refused: "This sign-in-as link can't be used …" (why is only in the log). */
@@ -42,9 +49,9 @@ public final class ImpersonatingPage {
         return new ImpersonatingPage(REFUSED, false, person, null, null, List.of(), stopUrl);
     }
 
-    /** "Your session as &lt;person&gt; has ended." */
-    static ImpersonatingPage ended(String person, String stopUrl) {
-        return new ImpersonatingPage(ENDED, false, person, null, null, List.of(), stopUrl);
+    /** "Your session as &lt;person&gt; has ended." with Sign in again (no Stop: it has ended). */
+    static ImpersonatingPage ended(String person, String signInAgainUrl) {
+        return new ImpersonatingPage(ENDED, false, person, null, null, List.of(), null, signInAgainUrl);
     }
 
     /** "&lt;App&gt; needs &lt;methods&gt;. &lt;admin&gt;'s sign-in didn't use them, …" (D39). */
@@ -76,6 +83,11 @@ public final class ImpersonatingPage {
     /** The method ids the app accepts (mode {@code needs}). */
     public List<String> getMethods() {
         return methods;
+    }
+
+    /** Mode ended: the authorize again (or Keycloak's restart of it); null: no link. */
+    public String getSignInAgainUrl() {
+        return signInAgainUrl;
     }
 
     /** Stop ({@link Impersonation#stopUrl}); null: no link. */

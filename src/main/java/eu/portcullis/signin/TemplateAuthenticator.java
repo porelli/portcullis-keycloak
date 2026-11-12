@@ -132,7 +132,7 @@ public class TemplateAuthenticator implements Authenticator {
         Instant now = clock.get();
         ImpersonationGuard.Result guard = ImpersonationGuard.check(context, impersonations, now, guardOps, ImpersonationGuard.Stage.TEMPLATE);
         if (guard.verdict() == ImpersonationGuard.Verdict.REFUSE || guard.verdict() == ImpersonationGuard.Verdict.ENDED) {
-            ImpersonationGuard.answer(context, guard, env, now);
+            ImpersonationGuard.answer(context, guard, env, now, guardOps, ImpersonationGuard.Stage.TEMPLATE);
             return;
         }
         boolean impersonated = guard.verdict() == ImpersonationGuard.Verdict.ALLOW;
