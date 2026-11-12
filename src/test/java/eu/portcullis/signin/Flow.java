@@ -159,6 +159,8 @@ final class Flow {
         providers.put(org.keycloak.services.x509.X509ClientCertificateLookup.class,
                 Fake.named("x509 lookup").on("getCertificateChain", a -> certificates)
                         .as(org.keycloak.services.x509.X509ClientCertificateLookup.class));
+        // No identity cookie: AuthenticationManager.authenticateIdentityCookie answers null (not signed in).
+        providers.put(org.keycloak.cookie.CookieProvider.class, Fake.named("cookies").as(org.keycloak.cookie.CookieProvider.class));
         sessionFake = Fake.named("session")
                 .ret("users", userProvider)
                 .ret("sessions", sessions)

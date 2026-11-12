@@ -339,7 +339,12 @@ class ImpersonationResourceTest {
 
     /** Every line ImpersonationResource logs while r runs (all levels). */
     static List<String> captured(Runnable r) {
-        java.util.logging.Logger jul = java.util.logging.Logger.getLogger(ImpersonationResource.class.getName());
+        return captured(ImpersonationResource.class, r);
+    }
+
+    /** Every line the class logs while r runs (all levels). */
+    static List<String> captured(Class<?> c, Runnable r) {
+        java.util.logging.Logger jul = java.util.logging.Logger.getLogger(c.getName());
         List<String> out = new ArrayList<>();
         Handler h = new Handler() {
             @Override

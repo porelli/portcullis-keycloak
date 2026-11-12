@@ -48,7 +48,15 @@ root's session plus hwk (the security_key touch); root's session is gone; a
 second start gets 403; a start bound to root's old session from the
 impersonated browser gets 403 with the banner; Keycloak's own impersonation
 answers an error (--features-disabled=impersonation); the IMPERSONATE event
-has pc_imp and pc_act and no reason, the LOGIN as alice pc_act root; and the
+has pc_imp and pc_act and no reason, the LOGIN as alice pc_act root. The
+guard (D42): in the impersonated browser an authorize for smoke-fresh (not in
+the file's clients), with pc_method, prompt=login, max_age=0 or acr_values
+gets the refused page (403, banner) and nothing is issued, while smoke still
+signs in; with the record gone from the file the next authorize gets the
+ended page and alice's session is logged out at once. The expiry task: a
+second and a third impersonation, each left alone while live (one 15 s run),
+then the record ended in the file, or the file made unreadable — alice's
+session is logged out by the task within 50 s with no browser involved. The
 log has no error naming portcullis and never the reason.
 """
 
@@ -584,7 +592,80 @@ def impersonation_main():
         status, _, text = open_start(page, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id2}")
         check(status == 403 and "You are signed in as alice (by root)" in text and "impersonation/stop" in text,
               f"impersonation: a start from the impersonated browser is refused with the banner and Stop (got {status})")
+
+        # The guard (D42): in the impersonated browser, only the file's clients and the SSO cookie alone.
+        for url, what in ((authorize_url(FRESH_CLIENT), "a client not in the file's clients"),
+                          (authorize_url(pc_method="security_key"), "pc_method"),
+                          (authorize_url(prompt="login"), "prompt=login"),
+                          (authorize_url(max_age="0"), "max_age=0"),
+                          (authorize_url(acr_values="2"), "acr_values")):
+            before = len(landed)
+            resp = page.goto(url)
+            page.wait_for_load_state("domcontentloaded")
+            text = page.content()
+            check(len(landed) == before and "Not while you are signed in as alice" in text
+                  and "You are signed in as alice (by root)" in text and resp is not None and resp.status == 403,
+                  f"impersonation guard: {what} refused with the banner, nothing issued (got {resp.status if resp else None})")
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        check(len(landed) > before and code_of(landed[-1]) is not None, "impersonation guard: the listed client still signs in")
+
+        # Ended (the record gone from the file): the next authorize shows the ended page and logs the session out at once.
+        write_impersonation([], [])
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_load_state("domcontentloaded")
+        text = page.content()
+        check(len(landed) == before and "Your session as alice has ended" in text,
+              "impersonation guard: a session no longer live gets the ended page, nothing issued")
+        alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+        check(not alive, f"impersonation guard: the ended session is logged out ({alive})")
         browser.close()
+
+        # The expiry task (every 15 s): ended in the file, then an unreadable file (fail closed).
+        for how in ("ended", "unreadable"):
+            b = p.chromium.launch()
+            c = b.new_context()
+            pg = c.new_page()
+            pg.goto(authorize_url(pc_method="password"))
+            pg.wait_for_load_state("domcontentloaded")
+            pg.fill("#username", "root")
+            pg.fill("#password", password)
+            pg.locator("#kc-login").click()
+            pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+            mine, _ = http("GET", f"{base}/users/{root}/sessions", token=admin_token())
+            sid_n = mine[0]["id"] if mine else "none"
+            id_n = secrets.token_hex(16)
+            pn, sn = records(id_n, sid_n, int(time.time()))
+            write_impersonation([pn], [sn])
+            status, _, _ = open_start(pg, f"{KC}/realms/{REALM}/portcullis-impersonate/start?id={id_n}")
+            check(status == 302, f"impersonation expiry ({how}): started (got {status})")
+            alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+            check(len(alive or []) == 1, f"impersonation expiry ({how}): alice's impersonated session exists ({alive})")
+            time.sleep(16)  # at least one run of the task with the good file: it stays
+            alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+            check(len(alive or []) == 1, f"impersonation expiry ({how}): a live session is left alone ({alive})")
+            if how == "ended":
+                sn = dict(sn, ended=rfc3339(time.time()))
+                write_impersonation([], [sn])
+            else:
+                path = os.path.join(HUB_DATA, "impersonation.json")
+                with open(path + ".tmp", "w") as f:
+                    f.write("{")
+                os.chmod(path + ".tmp", 0o644)
+                os.replace(path + ".tmp", path)
+            gone_after = None
+            t0 = time.time()
+            while time.time() - t0 < 50:
+                alive, _ = http("GET", f"{base}/users/{alice}/sessions", token=admin_token())
+                if not alive:
+                    gone_after = time.time() - t0
+                    break
+                time.sleep(2)
+            check(gone_after is not None, f"impersonation expiry ({how}): alice's session logged out by the task"
+                  + (f" after {gone_after:.0f} s" if gone_after is not None else " (still there after 50 s)"))
+            b.close()
 
     # Keycloak's own impersonation is off (core's --features-disabled=impersonation).
     try:

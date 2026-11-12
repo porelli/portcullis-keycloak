@@ -157,7 +157,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation"
+      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -282,7 +282,10 @@ jobs:
       # password; impersonation.json bound to root's session; the start with
       # root's cookies (302 to oauth2/start); the token for smoke is alice's
       # with act.sub root, pc_imp.id and root's amr + hwk; root's session
-      # gone; a second start 403; Keycloak's own impersonation refused; the
+      # gone; a second start 403; the guard (an unlisted client, pc_method,
+      # prompt=login, max_age, acr refused; an ended record → the ended page
+      # and the session logged out); the expiry task logs out an ended and an
+      # unreadable-file session within 50 s; Keycloak's own impersonation refused; the
       # IMPERSONATE event with pc_imp / pc_act; no portcullis ERROR and never
       # the reason in the log.
       - name: impersonation

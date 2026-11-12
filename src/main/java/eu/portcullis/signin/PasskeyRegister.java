@@ -58,7 +58,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * created through that kind's provider and type, and its attestation row
  * ({@link PasskeyStore}) in the same transaction;</li>
  * <li>the add-stronger cap ({@link #cap});</li>
- * <li>the form attribute {@code portcullisHints} ({@link #hintsFor}).</li>
+ * <li>the form attribute {@code portcullisHints} ({@link #hintsFor});</li>
+ * <li>never in an impersonated session ({@link ImpersonationGuard#impersonated},
+ * D42): the challenge and the posted registration both answer
+ * {@code portcullis-impersonating.ftl} (mode refused), nothing is stored
+ * and the action is never completed.</li>
  * </ul>
  */
 public class PasskeyRegister extends WebAuthnPasswordlessRegister {
@@ -81,6 +85,9 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
             List.of(PasskeyClassifier.SECURITY_KEY, PasskeyClassifier.DEVICE, PasskeyClassifier.SYNCED);
 
     private final KeycloakSession session;
+    /** The identity cookie's session (Keycloak's; a test gives its own). */
+    private final java.util.function.BiFunction<KeycloakSession, RealmModel, org.keycloak.services.managers.AuthenticationManager.AuthResult> identity;
+    private final java.util.function.Function<String, String> env;
 
     /** The registration being processed (this provider lives for one request). */
     private Pending pending;
@@ -91,8 +98,44 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
     record Cap(boolean allowed, String cappedAt) {}
 
     public PasskeyRegister(KeycloakSession session) {
+        this(session, (s, r) -> org.keycloak.services.managers.AuthenticationManager.authenticateIdentityCookie(s, r, true), System::getenv);
+    }
+
+    PasskeyRegister(KeycloakSession session,
+            java.util.function.BiFunction<KeycloakSession, RealmModel, org.keycloak.services.managers.AuthenticationManager.AuthResult> identity,
+            java.util.function.Function<String, String> env) {
         super(session, new NullCertPathTrustworthinessVerifier());
         this.session = session;
+        this.identity = identity;
+        this.env = env;
+    }
+
+    /**
+     * In an impersonated session: the refusal page (a challenge; nothing
+     * stored, the action never completed), and true.
+     */
+    private boolean refusedImpersonated(RequiredActionContext context) {
+        AuthenticationSessionModel auth = context.getAuthenticationSession();
+        Optional<Impersonation.Info> imp = ImpersonationGuard.impersonated(context.getSession(), context.getRealm(), auth, identity);
+        if (imp.isEmpty()) {
+            return false;
+        }
+        UserModel user = context.getUser();
+        String person = user == null ? null : user.getUsername();
+        LOG.infof("portcullis: impersonation %s: passkey registration refused", imp.get().id());
+        context.getEvent()
+                .event(EventType.UPDATE_CREDENTIAL)
+                .detail(WebAuthnConstants.REG_ERR_LABEL, "impersonated")
+                .error(Errors.INVALID_REGISTRATION);
+        String stop = Impersonation.stopUrl(env);
+        org.keycloak.forms.login.LoginFormsProvider forms = context.form();
+        ImpersonationBanner banner = ImpersonationBanner.of(imp.get(), person, stop, Instant.now());
+        if (banner != null) {
+            forms.setAttribute(ImpersonationResource.BANNER, banner);
+        }
+        context.challenge(forms.setAttribute(ImpersonationResource.ATTRIBUTE, ImpersonatingPage.refused(person, stop))
+                .setStatus(Response.Status.FORBIDDEN).createForm(ImpersonationResource.PAGE));
+        return true;
     }
 
     // ── The rules (pure; tested on their own) ──
@@ -164,6 +207,9 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
 
     @Override
     public void requiredActionChallenge(RequiredActionContext context) {
+        if (refusedImpersonated(context)) {
+            return;
+        }
         String action = context.getAuthenticationSession().getClientNote(Constants.KC_ACTION_PARAMETER);
         UserModel user = context.getUser();
         if (Constants.KC_ACTION_PARAMETER_SKIP_IF_EXISTS.equals(action) && hasPasskey(user)) {
@@ -194,6 +240,9 @@ public class PasskeyRegister extends WebAuthnPasswordlessRegister {
      */
     @Override
     public void processAction(RequiredActionContext context) {
+        if (refusedImpersonated(context)) {
+            return;
+        }
         register(context);
         if (context.getStatus() == RequiredActionContext.Status.SUCCESS) {
             History.reapply(context);

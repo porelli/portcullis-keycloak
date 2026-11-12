@@ -121,6 +121,22 @@ class NeedsStrongerTemplateTest {
         assertFalse(html.toLowerCase(Locale.ROOT).contains("client certificate"), html);
     }
 
+    /** F26: in an impersonated session the banner, every value escaped, with Stop. */
+    @Test
+    void bannerWhenImpersonated() throws Exception {
+        NeedsStronger page = NeedsStronger.of("Gitea", Set.of("security_key"), List.of(Set.of("yubikey_cert")), Set.of(), false,
+                "https://people.example.com/signin");
+        java.time.Instant now = java.time.Instant.parse("2026-11-12T14:10:00Z");
+        ImpersonationBanner banner = ImpersonationBanner.of(new Impersonation.Info(ImpersonationFileTest.ID, "root", "<b>x</b>",
+                now.plusSeconds(600)), "alice", "https://people.example.com/impersonation/stop", now);
+        String html = render(TemplateAuthenticator.PAGE, Map.of(TemplateAuthenticator.ATTRIBUTE, page, NeedsStronger.BANNER, banner))
+                .replaceAll("\\s+", " ");
+        assertTrue(html.contains("You are signed in as alice (by root) · reason “&lt;b&gt;x&lt;/b&gt;” · 10 min left"), html);
+        assertFalse(html.contains("<b>x</b>"), html);
+        assertTrue(html.contains("href=\"https://people.example.com/impersonation/stop\">Stop</a>"), html);
+        assertFalse(render(page).contains("You are signed in as"), "no banner outside an impersonation");
+    }
+
     @Test
     void neverUnescapes() throws Exception {
         String ftl = Files.readString(Path.of("src/main/resources/theme-resources/templates", TemplateAuthenticator.PAGE));

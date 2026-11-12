@@ -101,6 +101,9 @@ class PasskeyRegisterTest {
                     .on("success", a -> status = org.keycloak.authentication.RequiredActionContext.Status.SUCCESS)
                     .on("challenge", a -> status = org.keycloak.authentication.RequiredActionContext.Status.CHALLENGE)
                     .on("getStatus", a -> status)
+                    .on("getSession", a -> signIn.session)
+                    .on("getRealm", a -> signIn.realm)
+                    .on("form", a -> signIn.context.form())
                     .as(org.keycloak.authentication.RequiredActionContext.class);
             History.onSuccess(signIn.context, Set.of("passkey_synced"), Set.of("passkey_synced"), "sign_in");
         }
@@ -149,5 +152,52 @@ class PasskeyRegisterTest {
             }
         }.processAction(refused.context);
         assertFalse(refused.later.eventDetails().containsKey(History.KIND));
+    }
+
+    /** D42: in an impersonated session (ImpersonationGuard.impersonated) nothing is registered, not even skip_if_exists. */
+    @Test
+    void refusedWhileImpersonated() {
+        Action r = new Action(withSyncedPasskey());
+        Flow.Person alice = r.signIn.person("u-alice", "alice");
+        org.keycloak.models.UserSessionModel imp = Imp.alice(r.signIn, alice, "hwk");
+        boolean[] registered = {false};
+        PasskeyRegister under = new PasskeyRegister(null,
+                (s, realm) -> new org.keycloak.services.managers.AuthenticationManager.AuthResult(alice.model, imp, null, null),
+                k -> "https://people.example.com/signin") {
+            @Override
+            void register(org.keycloak.authentication.RequiredActionContext c) {
+                registered[0] = true;
+                c.success();
+            }
+        };
+        under.requiredActionChallenge(r.context);
+        assertEquals(org.keycloak.authentication.RequiredActionContext.Status.CHALLENGE, r.status);
+        assertEquals(ImpersonationResource.PAGE, r.signIn.page);
+        assertEquals(ImpersonatingPage.REFUSED,
+                ((ImpersonatingPage) r.signIn.formAttributes.get(ImpersonationResource.ATTRIBUTE)).getMode());
+        assertNull(r.signIn.formAttributes.get(PasskeyRegister.HINTS_ATTRIBUTE), "no registration form");
+
+        Action skip = new Action(withSyncedPasskey());
+        skip.signIn.clientNotes.put(org.keycloak.models.Constants.KC_ACTION_PARAMETER,
+                org.keycloak.models.Constants.KC_ACTION_PARAMETER_SKIP_IF_EXISTS);
+        under.requiredActionChallenge(skip.context);
+        assertEquals(org.keycloak.authentication.RequiredActionContext.Status.CHALLENGE, skip.status, "never completed");
+
+        Action post = new Action(withSyncedPasskey());
+        under.processAction(post.context);
+        assertFalse(registered[0], "nothing stored");
+        assertEquals(org.keycloak.authentication.RequiredActionContext.Status.CHALLENGE, post.status);
+        assertFalse(post.later.eventDetails().containsKey(History.KIND));
+
+        // Not impersonated: the registration runs.
+        Action plain = new Action(withSyncedPasskey());
+        new PasskeyRegister(null, (s, realm) -> null, k -> null) {
+            @Override
+            void register(org.keycloak.authentication.RequiredActionContext c) {
+                registered[0] = true;
+                c.success();
+            }
+        }.processAction(plain.context);
+        assertTrue(registered[0]);
     }
 }
