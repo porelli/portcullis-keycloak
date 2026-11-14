@@ -19,6 +19,9 @@
 #                   impersonation.json, opens portcullis-impersonate/start
 #                   with root's cookies and signs in to smoke as alice; the
 #                   env PORTCULLIS_PORTAL_URL / PORTCULLIS_SIGNIN_URL set.
+#   run.sh totp     "authenticator codes": the CONFIGURE_TOTP override, a
+#                   code after a password, pc_method=totp, the replay refusal
+#                   (pyotp, .github/smoke/requirements-totp.txt)
 #
 # Every mode starts Keycloak with --features-disabled=impersonation, as core
 # does (contract §8 "Stock impersonation off").
@@ -33,7 +36,8 @@ root=$(cd "$here/../.." && pwd)
 umask 022
 HUB_DATA=$(mktemp -d)
 chmod 755 "$HUB_DATA"
-export HUB_DATA KC_CONTAINER=kc-signin-smoke KC_URL=http://localhost:18080
+KC_PORT=${SMOKE_KC_PORT:-18080} # another port on a shared host
+export HUB_DATA KC_CONTAINER=kc-signin-smoke KC_URL=http://localhost:$KC_PORT
 KC_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 24)
 export KC_BOOTSTRAP_ADMIN_PASSWORD KC_BOOTSTRAP_ADMIN_USERNAME=smoke
 PKI=""
@@ -114,6 +118,10 @@ if [ "$MODE" = x509 ]; then
     --truststore-paths=/opt/keycloak/conf/truststores/portcullis
     --spi-crl-storage--infinispan--cache-time=60)
   echo "x509 kinds: proxy headers trusted from $trusted"
+elif [ "$MODE" = totp ]; then
+  export PORTCULLIS_SIGNIN_URL=http://localhost:18081/signin
+  extra=(-e PORTCULLIS_SIGNIN_URL)
+  kc_args=()
 elif [ "$MODE" = impersonation ]; then
   export PORTCULLIS_PORTAL_URL=http://localhost:18081/portal/ PORTCULLIS_SIGNIN_URL=http://localhost:18081/signin
   extra=(-e PORTCULLIS_PORTAL_URL -e PORTCULLIS_SIGNIN_URL)
@@ -124,7 +132,7 @@ fi
 kc_args+=(--features-disabled=impersonation)
 
 docker rm -f "$KC_CONTAINER" >/dev/null 2>&1 || true
-docker run -d --name "$KC_CONTAINER" -p 127.0.0.1:18080:8080 \
+docker run -d --name "$KC_CONTAINER" -p "127.0.0.1:$KC_PORT:8080" \
   -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
   -v "$root/src/test/resources/smoke-realm.json:/opt/keycloak/data/import/portcullis.json:ro" \
   -v "$HUB_DATA:/hub-data:ro" \
@@ -140,7 +148,7 @@ if ! curl -fsS -o /dev/null "$KC_URL/realms/portcullis/.well-known/openid-config
   exit 1
 fi
 rc=0
-if [ "$MODE" = x509 ] || [ "$MODE" = impersonation ]; then
+if [ "$MODE" = x509 ] || [ "$MODE" = impersonation ] || [ "$MODE" = totp ]; then
   "$PYTHON" "$here/signin.py" "$MODE" || rc=$?
 else
   "$PYTHON" "$here/signin.py" || rc=$?

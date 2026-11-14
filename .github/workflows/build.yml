@@ -157,7 +157,7 @@ jobs:
     env:
       # Contract §8.1 / plan D5: every provider id the extension ships so far
       # (space separated). The smoke run checks Keycloak lists each one.
-      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry portcullis-impersonation-notice"
+      PROVIDER_IDS: "webauthn-register-passwordless webauthn-register portcullis-security-key portcullis-device-passkey portcullis-passkey-store portcullis-reclassify portcullis-passkey portcullis-condition-passkey-kind portcullis-method portcullis-password-form portcullis-x509 portcullis-fresh auth-cookie portcullis-template portcullis-impersonate portcullis-impersonation portcullis-impersonation-expiry portcullis-impersonation-notice portcullis-otp CONFIGURE_TOTP"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,10 +222,11 @@ jobs:
           done
           # The overrides are the ones in use, not the stock factories of
           # the same id (both are listed either way).
-          for id in webauthn-register-passwordless webauthn-register; do
+          for pair in webauthn-register-passwordless=passkey-kinds webauthn-register=passkey-kinds CONFIGURE_TOTP=totp; do
+            id=${pair%%=*} want=${pair#*=}
             marker=$(jq -r --arg id "$id" '.providers["required-action"].providers[$id].operationalInfo.portcullis // ""' "$work/serverinfo.json")
             order=$(jq -r --arg id "$id" '.providers["required-action"].providers[$id].order // 0' "$work/serverinfo.json")
-            if [ "$marker" = passkey-kinds ] && [ "$order" = 1 ]; then echo "ok  $id is the Portcullis override"; else echo "::error::required action $id isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
+            if [ "$marker" = "$want" ] && [ "$order" = 1 ]; then echo "ok  $id is the Portcullis override"; else echo "::error::required action $id isn't the Portcullis override (marker '$marker', order $order)"; missing=1; fi
           done
           marker=$(jq -r '.providers["authenticator"].providers["auth-cookie"].operationalInfo.portcullis // ""' "$work/serverinfo.json")
           order=$(jq -r '.providers["authenticator"].providers["auth-cookie"].order // 0' "$work/serverinfo.json")
@@ -253,6 +254,7 @@ jobs:
         run: |
           python3 -m venv /tmp/smoke-venv
           /tmp/smoke-venv/bin/pip install --quiet -r .github/smoke/requirements.txt
+          /tmp/smoke-venv/bin/pip install --quiet --require-hashes --only-binary=:all: -r .github/smoke/requirements-totp.txt
           sudo /tmp/smoke-venv/bin/playwright install-deps chromium
           /tmp/smoke-venv/bin/playwright install chromium
 
@@ -300,6 +302,22 @@ jobs:
           IMAGE: portcullis-keycloak:smoke
           PYTHON: /tmp/smoke-venv/bin/python
         run: bash .github/smoke/run.sh impersonation
+
+      # Authenticator-app codes (contract §8.1 "Authenticator-app codes"): the
+      # CONFIGURE_TOTP override refuses a password-only session before any
+      # secret exists; with add_stronger on, Keycloak's page and manual key
+      # (masked with ::add-mask::, never printed, no screenshot) give pyotp's
+      # code, the credential is stored and UPDATE_CREDENTIAL carries its label
+      # and id; pc_method=totp on the SSO session shows only the code form
+      # (amr pwd + otp); a forced re-authentication (delete_credential,
+      # prompt=login) never offers the code; all[password, totp] asks for the
+      # code after the password (LOGIN pc_methods password,totp); the same
+      # code again is refused; the key is never in Keycloak's log.
+      - name: authenticator codes
+        env:
+          IMAGE: portcullis-keycloak:smoke
+          PYTHON: /tmp/smoke-venv/bin/python
+        run: bash .github/smoke/run.sh totp
 
       # Both platforms, never pushed: every run checks the arm64 image
       # builds. Main's publishing runs write the layer cache (mode=max:
