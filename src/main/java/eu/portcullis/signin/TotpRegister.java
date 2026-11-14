@@ -55,8 +55,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * never completed.</li>
  * <li><b>Success</b> adds {@code credential_user_label}, {@code credential_id}
  * and, on a replace, {@link #REPLACED} (the old label) to the stock
- * {@code UPDATE_CREDENTIAL} before Keycloak sends it, then puts the sign-in's
- * history details back on the builder ({@link History#reapply}).</li>
+ * {@code UPDATE_CREDENTIAL} and puts the sign-in's history details back on
+ * the builder ({@link History#reapply}). Keycloak sends that event once
+ * {@code processAction} returns (checked live by the smoke run), and the
+ * {@code LOGIN} that may follow in the same request uses the same builder,
+ * so it carries them too, as it carries the stock {@code credential_type}.</li>
  * </ul>
  *
  * <p>It logs only the username, credential ids and the outcome: never the
@@ -310,11 +313,8 @@ public class TotpRegister extends UpdateTotp {
         if (context.getStatus() != RequiredActionContext.Status.SUCCESS) {
             return; // a wrong code, a missing name: the stock form again, nothing stored
         }
-        // The stock UPDATE_CREDENTIAL has been sent: its details stay off the LOGIN that may follow.
-        EventBuilder e = context.getEvent();
-        e.removeDetail(CREDENTIAL_LABEL);
-        e.removeDetail(CREDENTIAL_ID);
-        e.removeDetail(REPLACED);
+        // Keycloak sends this builder's UPDATE_CREDENTIAL after processAction returns
+        // (LoginActionsService.processRequireAction), so the details stay on it.
         History.reapply(context);
         if (replaceId[0] == null) {
             LOG.infof("portcullis: authenticator app added for %s: %s", user.getUsername(), String.join(",", added));

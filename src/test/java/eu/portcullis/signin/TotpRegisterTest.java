@@ -220,9 +220,10 @@ class TotpRegisterTest {
         assertEquals("new-otp", r.sent.get("credential_id"));
         assertEquals("otp", r.sent.get("credential_type"));
         assertFalse(r.sent.containsKey(TotpRegister.REPLACED), "an add, not a replace");
-        // After the UPDATE_CREDENTIAL: the LOGIN that may follow carries the sign-in's details, not the credential's.
+        // Keycloak sends the builder's UPDATE_CREDENTIAL after processAction: the details are still on it,
+        // with the sign-in's history details back for the LOGIN that may follow.
+        assertEquals("new-otp", r.flow.eventDetails().get("credential_id"));
         assertEquals("sign_in", r.flow.eventDetails().get(History.KIND));
-        assertFalse(r.flow.eventDetails().containsKey("credential_id"));
     }
 
     @Test
@@ -319,7 +320,7 @@ class TotpRegisterTest {
         assertEquals("Old phone", r.sent.get(TotpRegister.REPLACED));
         assertEquals("Authenticator 2026-11-14 10:00:00", r.sent.get("credential_user_label"));
         assertEquals("new-otp", r.sent.get("credential_id"));
-        assertFalse(r.flow.eventDetails().containsKey(TotpRegister.REPLACED), "not on the LOGIN");
+        assertEquals("Old phone", r.flow.eventDetails().get(TotpRegister.REPLACED), "still on the builder Keycloak sends");
     }
 
     @Test
