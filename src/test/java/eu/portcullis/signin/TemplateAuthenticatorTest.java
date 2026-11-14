@@ -166,6 +166,59 @@ class TemplateAuthenticatorTest {
         assertEquals("totp", g.authNotes.get(OtpAuthenticator.METHOD_NOTE), "kept over the reset");
     }
 
+    /**
+     * H1: a fresh auth (prompt=login, max_age=0, pc_method=totp) on the unlisted
+     * fresh-auth client: the password first (pc_method=totp allows the primary
+     * methods until one is done), then the template asks for the code, then
+     * pc_fresh=totp.
+     */
+    @Test
+    void freshAuthWithPcMethodTotpEndsWithTheCode() {
+        SigninConfig cfg = Configs.of(Configs.WITH_TOTP, false, "", "");
+        Flow f = new Flow();
+        f.clientId = "portcullis-fresh-auth";
+        Flow.Person alice = f.person("u-alice", "alice").otp("otp-1", "phone");
+        alice.password = "pw";
+        f.clientNotes.put(PcMethod.CLIENT_NOTE, "totp");
+        f.user = alice.model; // a forced re-authentication: auth-cookie sets the user, nothing completed
+        assertEquals(java.util.Optional.empty(), PcMethod.effective(f.context, cfg));
+        new PasswordForm(() -> cfg).authenticate(f.context);
+        assertEquals(FlowStatus.CHALLENGE, f.status, "the password form, not a dead end");
+        new OtpAuthenticator(() -> cfg, (s, r) -> null).authenticate(f.context);
+        assertEquals(FlowStatus.ATTEMPTED, f.status, "never the code first");
+
+        // The password signed in: the template asks for the code.
+        f.completed("pwd");
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        check(cfg, false).authenticate(f.context);
+        reset(f);
+        assertEquals("totp", f.authNotes.get(PcMethod.STEP_NOTE));
+        assertEquals(java.util.Optional.of("totp"), PcMethod.effective(f.context, cfg), "now only the code");
+        new PasswordForm(() -> cfg).authenticate(f.context);
+        assertEquals(FlowStatus.ATTEMPTED, f.status, "the password steps aside now");
+        new OtpAuthenticator(() -> cfg, (s, r) -> null).authenticate(f.context);
+        assertEquals(FlowStatus.CHALLENGE, f.status, "the code form");
+
+        // The code signed in: success, pc_fresh=totp.
+        f.completed("pwd", "otp");
+        f.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        check(cfg, false).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("totp", f.clientNotes.get(FreshMapper.NOTE));
+        assertEquals("password,totp", f.eventDetails().get(History.METHODS));
+
+        // Without an authenticator app: no step, the sign-in ends with the password (the Hub refuses it).
+        Flow none = new Flow();
+        none.clientId = "portcullis-fresh-auth";
+        none.user = none.person("u-bob", "bob").model;
+        none.clientNotes.put(PcMethod.CLIENT_NOTE, "totp");
+        none.completed("pwd");
+        none.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        check(cfg, false).authenticate(none.context);
+        assertEquals(FlowStatus.SUCCESS, none.status);
+        assertEquals("password", none.clientNotes.get(FreshMapper.NOTE));
+    }
+
     @Test
     void freshOrderTotpAbovePassword() {
         SigninConfig cfg = Configs.of(Configs.WITH_TOTP, false, "", "");

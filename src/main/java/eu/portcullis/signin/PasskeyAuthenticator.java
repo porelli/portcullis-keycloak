@@ -139,7 +139,7 @@ public class PasskeyAuthenticator implements Authenticator {
         /** The kinds this authentication may use: switched on and allowed by {@code pc_method}. */
         List<String> acceptedKinds(AuthenticationFlowContext context) {
             SigninConfig cfg = config.get();
-            Optional<String> requested = PcMethod.requested(context);
+            Optional<String> requested = PcMethod.effective(context, cfg);
             List<String> out = new ArrayList<>(3);
             for (String k : Methods.PASSKEY_KINDS) {
                 if (cfg.on(k) && PcMethod.allows(requested, k)) {

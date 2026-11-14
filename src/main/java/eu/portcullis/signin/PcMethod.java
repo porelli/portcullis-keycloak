@@ -36,6 +36,28 @@ public final class PcMethod {
         return step.isPresent() ? step : parse(a.getClientNote(CLIENT_NOTE));
     }
 
+    /**
+     * The request the methods follow ({@link #requested}), except that
+     * {@code totp} with no other method completed yet in this authentication
+     * ({@link OtpAuthenticator#primaryDone}) means "end with the code": the
+     * person's other switched-on methods first, as a normal sign-in (empty), so
+     * a code is never the only proof; {@code portcullis-template} then asks for
+     * the code ({@link TemplateAuthenticator}). Once a primary method is done,
+     * {@code totp} again allows only the code.
+     */
+    public static Optional<String> effective(AuthenticationFlowContext context, SigninConfig cfg) {
+        Optional<String> r = requested(context);
+        if (r.isPresent() && OtpAuthenticator.TOTP.equals(r.get()) && !OtpAuthenticator.primaryDone(context, cfg)) {
+            return Optional.empty();
+        }
+        return r;
+    }
+
+    /** Whether the client asked for the code ({@code pc_method=totp} on the authorize request). */
+    static boolean clientAsksCode(AuthenticationSessionModel a) {
+        return a != null && OtpAuthenticator.TOTP.equals(a.getClientNote(CLIENT_NOTE));
+    }
+
     /** v when it is one of the seven method ids or {@code passkey}, exactly; else empty. */
     static Optional<String> parse(String v) {
         if (v == null) {

@@ -153,7 +153,7 @@ public class TotpRegister extends UpdateTotp {
         if (cfg == null || !cfg.on(OtpAuthenticator.TOTP)) {
             return Decision.refuse(OFF);
         }
-        if (username == null || PasswordForm.refused(username)) {
+        if (OtpAuthenticator.reserved(username)) {
             return Decision.refuse(NOT_AVAILABLE);
         }
         Set<String> amr = sessionAmr == null ? Set.of() : sessionAmr;
@@ -261,6 +261,12 @@ public class TotpRegister extends UpdateTotp {
             return true;
         }
         LOG.infof("portcullis: authenticator app setup for %s refused (%s)", person, d.messageKey());
+        refusalPage(context, d.messageKey());
+        return true;
+    }
+
+    /** The refusal: an UPDATE_CREDENTIAL error event and portcullis-totp-refused.ftl (403) with key's message. */
+    private void refusalPage(RequiredActionContext context, String key) {
         context.getEvent()
                 .event(EventType.UPDATE_CREDENTIAL)
                 .detail(Details.CREDENTIAL_TYPE, OtpAuthenticator.OTP_TYPE)
@@ -268,10 +274,20 @@ public class TotpRegister extends UpdateTotp {
         String signin = TemplateAuthenticator.signinPage(env,
                 () -> TemplateAuthenticator.accountUrl(context.getUriInfo().getBaseUri(), context.getRealm().getName()));
         context.challenge(context.form()
-                .setAttribute(ATTRIBUTE, new Refusal(d.messageKey(), signin))
+                .setAttribute(ATTRIBUTE, new Refusal(key, signin))
                 .setStatus(Response.Status.FORBIDDEN)
                 .createForm(PAGE));
-        return true;
+    }
+
+    /** A refusal found while the stock code stores: the transaction is rolled back, nothing kept. */
+    static final class Aborted extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        final String messageKey;
+
+        Aborted(String messageKey) {
+            super(messageKey, null, false, false);
+            this.messageKey = messageKey;
+        }
     }
 
     /** {@code portcullis-impersonating.ftl} mode refused (403): nothing stored, the action never completed. */
@@ -309,7 +325,15 @@ public class TotpRegister extends UpdateTotp {
         UserModel user = context.getUser();
         Set<String> before = otpIds(user);
         Set<String> added = new LinkedHashSet<>();
-        stockProcess(onSuccess(context, () -> added.add(completed(context, user, before, replaceId[0]))));
+        try {
+            stockProcess(onSuccess(context, () -> added.add(completed(context, user, before, replaceId[0]))));
+        } catch (Aborted a) {
+            // The new credential (and any removal) must not be kept: roll back, then the refusal.
+            context.getSession().getTransactionManager().setRollbackOnly();
+            LOG.infof("portcullis: authenticator app setup for %s refused while storing (%s): rolled back", user.getUsername(), a.messageKey);
+            refusalPage(context, a.messageKey);
+            return;
+        }
         if (context.getStatus() != RequiredActionContext.Status.SUCCESS) {
             return; // a wrong code, a missing name: the stock form again, nothing stored
         }
@@ -327,7 +351,12 @@ public class TotpRegister extends UpdateTotp {
      * Right before the stock {@code context.success()} (the credential is
      * stored; Keycloak sends {@code UPDATE_CREDENTIAL} right after it): the
      * new credential found, the replaced one removed, the details added; the
-     * new id. Any surprise throws: the transaction rolls back, nothing kept.
+     * new id. The replaced one gone meanwhile, or more than {@link #MAX}
+     * apps now (two adds at once), is {@link Aborted} (a refusal, rolled
+     * back); anything else unexpected throws too: nothing is kept. Under the
+     * database's read-committed isolation the count sees only committed rows,
+     * so two exactly simultaneous adds can still both pass: this narrows the
+     * race, it can't close it.
      */
     private static String completed(RequiredActionContext context, UserModel user, Set<String> before, String replaceId) {
         CredentialModel created = null;
@@ -346,9 +375,12 @@ public class TotpRegister extends UpdateTotp {
             CredentialModel old = user.credentialManager().getStoredCredentialById(replaceId);
             if (old == null || !OtpAuthenticator.OTP_TYPE.equals(old.getType())
                     || !user.credentialManager().removeStoredCredentialById(replaceId)) {
-                throw new IllegalStateException("portcullis: the authenticator app to replace is gone");
+                throw new Aborted(REPLACE_UNKNOWN);
             }
             e.detail(REPLACED, old.getUserLabel() == null ? "" : old.getUserLabel());
+        }
+        if (user.credentialManager().getStoredCredentialsByTypeStream(OtpAuthenticator.OTP_TYPE).count() > MAX) {
+            throw new Aborted(LIMIT);
         }
         e.detail(CREDENTIAL_LABEL, created.getUserLabel());
         e.detail(CREDENTIAL_ID, created.getId());

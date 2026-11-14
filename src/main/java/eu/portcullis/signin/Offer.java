@@ -34,7 +34,7 @@ final class Offer {
         if (options == null || options.isEmpty()) {
             return;
         }
-        Optional<String> requested = PcMethod.requested(context);
+        Optional<String> requested = PcMethod.effective(context, cfg);
         UserModel known = context.getUser();
         RealmModel realm = context.getRealm();
         X509Authenticator x509 = new X509Authenticator(false, () -> cfg);

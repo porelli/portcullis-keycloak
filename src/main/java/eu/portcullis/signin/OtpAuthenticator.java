@@ -32,7 +32,7 @@ import org.keycloak.services.managers.AuthenticationManager;
  * required action's {@code max_auth_age}, {@code delete_credential} or
  * {@code CONFIGURE_TOTP} — counts only what it completed itself, so a code
  * alone never completes one), the user has an {@code otp} credential and isn't
- * {@code admin} / {@code portcullis-hub} ({@link PasswordForm#refused}),
+ * reserved ({@link #reserved}: {@code admin} and every {@code portcullis-*}),
  * {@code pc_method} is absent or {@code totp}, and the session isn't
  * impersonated (T13: the person's code is never asked for; {@code
  * portcullis-template} then shows its {@code needs} page). A code posted
@@ -75,10 +75,20 @@ public class OtpAuthenticator implements Authenticator {
      * credential. Anything unreadable is false.
      */
     static boolean usable(UserModel user, SigninConfig cfg) {
-        if (user == null || cfg == null || !cfg.on(TOTP) || PasswordForm.refused(user.getUsername())) {
+        if (user == null || cfg == null || !cfg.on(TOTP) || reserved(user.getUsername())) {
             return false;
         }
         return hasCode(user);
+    }
+
+    /**
+     * The accounts that never set up or use a code: {@code admin},
+     * {@code portcullis-hub} ({@link PasswordForm#refused}) and every
+     * {@code portcullis-*} name (the Hub's inventory never lists their codes),
+     * trimmed and lowercased; a missing name too.
+     */
+    static boolean reserved(String name) {
+        return name == null || PasswordForm.refused(name) || name.trim().toLowerCase(java.util.Locale.ROOT).startsWith("portcullis-");
     }
 
     /** Whether user has an {@code otp} credential (unreadable: false). */

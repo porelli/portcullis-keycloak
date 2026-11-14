@@ -54,6 +54,13 @@ class TotpRegisterTest {
             assertRefused(TotpRegister.NOT_AVAILABLE, decide(Set.of("hwk"), true, ON, name, 0, Optional.empty(), NONE));
         }
         assertRefused(TotpRegister.NOT_AVAILABLE, decide(Set.of("hwk"), true, ON, null, 0, Optional.empty(), NONE));
+        // L4: every portcullis-* account, as the Hub's inventory.
+        for (String name : new String[] {"portcullis-mcp", " Portcullis-x ", "PORTCULLIS-enroll"}) {
+            assertRefused(TotpRegister.NOT_AVAILABLE, decide(Set.of("hwk"), true, ON, name, 0, Optional.empty(), NONE));
+            assertTrue(OtpAuthenticator.reserved(name), name);
+        }
+        assertFalse(OtpAuthenticator.reserved("portcullis"), "the prefix needs its dash");
+        assertFalse(OtpAuthenticator.reserved("alice"));
     }
 
     @Test
@@ -139,7 +146,11 @@ class TotpRegisterTest {
         boolean stockChallenged;
         boolean stockPosted;
 
+        /** The request's transaction (setRollbackOnly recorded). */
+        final Fake tx = Fake.named("transaction");
+
         Action(String username, String... amrs) {
+            flow.sessionFake.ret("getTransactionManager", tx.as(org.keycloak.models.KeycloakTransactionManager.class));
             person = flow.person("u-" + username.trim(), username);
             flow.user = person.model;
             flow.completed(amrs);
@@ -347,14 +358,40 @@ class TotpRegisterTest {
                 c.success();
             }
         };
-        assertThrows(IllegalStateException.class, () -> racing.processAction(race.context));
-        assertNull(race.status, "never completed");
+        racing.processAction(race.context);
+        assertEquals(RequiredActionContext.Status.CHALLENGE, race.status, "a refusal, never completed");
+        assertTrue(race.tx.called("setRollbackOnly"), "the new credential is rolled back");
+        assertEquals(TotpRegister.REPLACE_UNKNOWN, ((TotpRegister.Refusal) race.flow.formAttributes.get(TotpRegister.ATTRIBUTE)).getMessage());
+        assertEquals(TotpRegister.PAGE, race.flow.page);
 
         // A replace id that names a passkey of theirs.
         Action passkey = new Action("alice", "hwk").initiated("webauthn-passwordless-0");
         passkey.person.passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s"));
         passkey.register(ON).requiredActionChallenge(passkey.context);
         assertFalse(passkey.stockChallenged);
+    }
+
+    /** L1: two adds at once past the limit: the later one is refused and rolled back. */
+    @Test
+    void concurrentAddOverTheLimitRolledBack() {
+        Action r = new Action("alice", "hwk").initiated(null);
+        r.person.otp("o1", "a").otp("o2", "b").otp("o3", "c"); // the other popup stored the third meanwhile
+        TotpRegister t = new TotpRegister((s, realm) -> null, k -> null, () -> ON) {
+            @Override
+            Decision decide(RequiredActionContext c) {
+                return Decision.allow(null); // what it decided when only two existed
+            }
+
+            @Override
+            void stockProcess(RequiredActionContext c) {
+                r.person.otp("new-otp", "d");
+                c.success();
+            }
+        };
+        t.processAction(r.context);
+        assertEquals(RequiredActionContext.Status.CHALLENGE, r.status);
+        assertTrue(r.tx.called("setRollbackOnly"));
+        assertEquals(TotpRegister.LIMIT, ((TotpRegister.Refusal) r.flow.formAttributes.get(TotpRegister.ATTRIBUTE)).getMessage());
     }
 
     @Test

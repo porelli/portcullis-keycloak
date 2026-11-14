@@ -15,7 +15,7 @@ import org.keycloak.services.managers.AuthenticationManager;
 
 class CookieAuthenticatorTest {
     /** The override with the SSO session given and the stock path recorded (it signs in with the cookie). */
-    private static final class Under extends CookieAuthenticator {
+    private static class Under extends CookieAuthenticator {
         final UserSessionModel sso;
         boolean stockRan;
         /** What the stock code answers (true: signs in with the cookie; false: attempted, e.g. an acr step-up). */
@@ -60,6 +60,42 @@ class CookieAuthenticatorTest {
             }
             context.attachUserSession(sso);
             context.success();
+        }
+    }
+
+    /**
+     * L5: what keeps a code from being the only proof of a re-authentication:
+     * under a forced re-authentication the SSO session's executions are never
+     * carried over, so portcullis-otp sees no primary method; a step-up (no
+     * re-authentication) carries them, and the code may follow.
+     */
+    @Test
+    void reauthenticationCarriesNoExecutionsForTheCode() {
+        SigninConfig cfg = Configs.of(Configs.WITH_TOTP, false, "", "");
+        for (boolean reauth : new boolean[] {true, false}) {
+            Flow f = new Flow();
+            Flow.Person alice = f.person("u-alice", "alice").otp("otp-1", "phone");
+            f.clientNotes.put(PcMethod.CLIENT_NOTE, "totp");
+            UserSessionModel sso = f.userSession(alice, "pwd");
+            Under a = new Under(cfg, sso) {
+                @Override
+                protected boolean reauthenticate(AuthenticationFlowContext context, AuthenticationManager.AuthResult s) {
+                    return reauth;
+                }
+            };
+            a.stockSignsIn = false; // Keycloak's re-authentication branch: the user set, attempted
+            a.authenticate(f.context);
+            assertEquals(FlowStatus.ATTEMPTED, f.status, "reauth=" + reauth);
+            String completed = f.userSessionNotes.get(Constants.AUTHENTICATORS_COMPLETED);
+            if (reauth) {
+                assertTrue(completed == null || !completed.contains("exec-pwd"), "nothing carried over: " + completed);
+                assertFalse(OtpAuthenticator.primaryDone(f.context, cfg), "a re-authentication: no primary yet");
+                assertEquals(java.util.Optional.empty(), PcMethod.effective(f.context, cfg), "the primary methods first");
+            } else {
+                assertTrue(completed.contains("exec-pwd"));
+                assertTrue(OtpAuthenticator.primaryDone(f.context, cfg), "a step-up: the SSO session's password counts");
+                assertEquals(java.util.Optional.of("totp"), PcMethod.effective(f.context, cfg), "only the code");
+            }
         }
     }
 

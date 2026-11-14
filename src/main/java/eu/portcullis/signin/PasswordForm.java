@@ -67,7 +67,8 @@ public class PasswordForm extends UsernamePasswordForm {
     }
 
     private boolean usable(AuthenticationFlowContext context) {
-        return config.get().on(PASSWORD) && PcMethod.allows(PcMethod.requested(context), PASSWORD);
+        SigninConfig cfg = config.get();
+        return cfg.on(PASSWORD) && PcMethod.allows(PcMethod.effective(context, cfg), PASSWORD);
     }
 
     @Override

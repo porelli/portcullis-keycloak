@@ -151,6 +151,9 @@ public class TemplateAuthenticator implements Authenticator {
         Optional<Rule> template = cfg.templateForClient(clientId);
         if (template.isEmpty()) {
             // unlisted (and the file is valid): group-gate, mcp-gate or the Hub check it
+            if (!impersonated && askCode(context, user, cfg)) {
+                return;
+            }
             succeed(context, Methods.ofAuthentication(context.getRealm(), authSession, cfg), cfg);
             return;
         }
@@ -164,6 +167,9 @@ public class TemplateAuthenticator implements Authenticator {
         }
         Set<String> have = Methods.ofAuthentication(context.getRealm(), authSession, cfg);
         if (rule.satisfiedBy(have)) {
+            if (!impersonated && askCode(context, user, cfg)) {
+                return;
+            }
             succeed(context, have, cfg);
             return;
         }
@@ -200,6 +206,29 @@ public class TemplateAuthenticator implements Authenticator {
                 setUp, cfg.addStronger(), signinPage(context, env));
         Response response = context.form().setAttribute(ATTRIBUTE, page).createForm(PAGE);
         context.forceChallenge(response);
+    }
+
+    /**
+     * {@code pc_method=totp} on the authorize request ends with the code: when
+     * this authentication hasn't run it yet ({@link #ranMethods}), the person
+     * may use one ({@link OtpAuthenticator#usable}) and it wasn't asked
+     * before, the flow runs again asking for it (after the primary method that
+     * just completed); true when asked. Otherwise the sign-in ends as it is
+     * (fresh auth then gets the stronger method that ran; the Hub or the gate
+     * refuses what it doesn't accept).
+     */
+    private boolean askCode(AuthenticationFlowContext context, UserModel user, SigninConfig cfg) {
+        AuthenticationSessionModel a = context.getAuthenticationSession();
+        if (user == null || inBrokerFlow(a) || !PcMethod.clientAsksCode(a) || ranMethods(a, cfg).contains(OtpAuthenticator.TOTP)
+                || !OtpAuthenticator.usable(user, cfg) || !OtpAuthenticator.primaryDone(context, cfg)) {
+            return false;
+        }
+        Set<String> asked = asked(a);
+        if (asked.contains(OtpAuthenticator.TOTP)) {
+            return false;
+        }
+        ask(context, OtpAuthenticator.TOTP, asked);
+        return true;
     }
 
     /** The methods of the rule's alternatives the session lacks, in the method table's order. */

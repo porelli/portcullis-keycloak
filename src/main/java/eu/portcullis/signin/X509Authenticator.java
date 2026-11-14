@@ -106,7 +106,8 @@ public class X509Authenticator extends X509ClientCertificateAuthenticator {
     /** The method of this execution when it may run now (on, allowed by pc_method), else null. */
     private String usableMethod(AuthenticationFlowContext context) {
         String m = method(context.getAuthenticatorConfig());
-        if (m == null || !config.get().on(m) || !PcMethod.allows(PcMethod.requested(context), m)) {
+        SigninConfig cfg = config.get();
+        if (m == null || !cfg.on(m) || !PcMethod.allows(PcMethod.effective(context, cfg), m)) {
             return null;
         }
         return m;

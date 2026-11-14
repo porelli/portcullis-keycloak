@@ -90,7 +90,7 @@ class OtpAuthenticatorTest {
 
     @Test
     void attemptedForAdminAndHub() {
-        for (String name : new String[] {"admin", "portcullis-hub", "Admin", " admin "}) {
+        for (String name : new String[] {"admin", "portcullis-hub", "Admin", " admin ", "portcullis-mcp", " Portcullis-x "}) {
             Flow f = new Flow();
             f.user = f.person("u-" + name.trim(), name).otp("otp-1", "a").model;
             otp(ON).authenticate(f.context);

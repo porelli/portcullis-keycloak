@@ -1021,6 +1021,23 @@ def landed_since(before):
     return landed[-1] if len(landed) > before else None
 
 
+def events_of(token, uid, kind, since_ms):
+    got, _ = http("GET", f"{KC}/admin/realms/{REALM}/events?type={kind}&user={uid}&max=50", token=token)
+    return [e for e in got or [] if e.get("time", 0) >= since_ms]
+
+
+def manual_key(page, what):
+    """The setup page's manual key (masked in the Actions log at once, never printed); "" when not shown."""
+    page.locator("#mode-manual").click()
+    page.wait_for_load_state("domcontentloaded")
+    shown = page.locator("#kc-totp-secret-key")
+    key = shown.inner_text().replace(" ", "").strip() if shown.count() == 1 else ""
+    if key and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::add-mask::{key}", flush=True)
+    check(len(key) >= 32, what + ": the manual key is shown (its length only)")
+    return key
+
+
 def credentials_of(token, uid):
     creds, _ = http("GET", f"{KC}/admin/realms/{REALM}/users/{uid}/credentials", token=token)
     return [c for c in creds or [] if c.get("type") == "otp"]
@@ -1050,7 +1067,7 @@ def totp_main():
     server = HTTPServer(("127.0.0.1", 18081), Callback)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     used = set()
-    key = None
+    keys = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -1075,14 +1092,10 @@ def totp_main():
         page.goto(authorize_url(kc_action="CONFIGURE_TOTP"))
         page.wait_for_load_state("domcontentloaded")
         check(page.locator("#kc-totp-secret-qr-code").count() == 1, "totp_signin: Keycloak's QR code page")
-        page.locator("#mode-manual").click()
-        page.wait_for_load_state("domcontentloaded")
-        shown = page.locator("#kc-totp-secret-key")
-        key = shown.inner_text().replace(" ", "").strip() if shown.count() == 1 else ""
-        if key and os.environ.get("GITHUB_ACTIONS") == "true":
-            print(f"::add-mask::{key}", flush=True)
-        check(len(key) >= 32, "totp_signin: the manual key is shown (its length only)")
+        key = manual_key(page, "totp_signin")
+        keys.append(key)
         otp = pyotp.TOTP(key)
+        enrolled = int(time.time() * 1000) - 1000
         page.fill("#totp", fresh_code(otp, used))
         page.fill("#userLabel", "Smoke phone")
         before = len(landed)
@@ -1096,9 +1109,42 @@ def totp_main():
         updates, _ = http("GET", f"{KC}/admin/realms/{REALM}/events?type=UPDATE_CREDENTIAL&user={uid}&max=10", token=admin_token())
         details = [e.get("details", {}) for e in updates or []]
         want = {"credential_type": "otp", "credential_user_label": "Smoke phone", "credential_id": cred_id}
+        login = latest_login(admin_token(), uid, enrolled) or {}
+        # L3 / contract: Keycloak sends the LOGIN after the action from the same builder: it carries them too.
+        check(login.get("credential_user_label") == "Smoke phone",
+              "totp_signin: the LOGIN after the action carries the credential's details too (documented; readers use UPDATE_CREDENTIAL)")
         check(any(all(d.get(k) == v for k, v in want.items()) for d in details),
               f"totp_signin: UPDATE_CREDENTIAL carries {want}" + ("" if any(all(d.get(k) == v for k, v in want.items()) for d in details)
                                                                     else f" (got {details})"))
+
+        # totp_replace: kc_action=CONFIGURE_TOTP:<id> replaces that app (Keycloak keeps the part after the first colon).
+        since = int(time.time() * 1000) - 1000
+        page.goto(authorize_url(kc_action=f"CONFIGURE_TOTP:{cred_id}"))
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#kc-totp-secret-qr-code").count() == 1, "totp_replace: Keycloak's QR code page")
+        key = manual_key(page, "totp_replace")
+        keys.append(key)
+        otp = pyotp.TOTP(key)
+        page.fill("#totp", fresh_code(otp, used))
+        page.fill("#userLabel", "Smoke phone 2")
+        before = len(landed)
+        page.locator("#saveTOTPBtn").click()
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        check("kc_action_status=success" in (landed_since(before) or ""), "totp_replace: the action succeeded")
+        creds = credentials_of(admin_token(), uid)
+        new_id = creds[0]["id"] if len(creds) == 1 else ""
+        check(len(creds) == 1 and new_id != cred_id and creds[0].get("userLabel") == "Smoke phone 2",
+              f"totp_replace: exactly one otp credential, the new one ({len(creds)})")
+        details = [e.get("details", {}) for e in events_of(admin_token(), uid, "UPDATE_CREDENTIAL", since)]
+        check(any(d.get("pc_replaced") == "Smoke phone" and d.get("credential_id") == new_id
+                  and d.get("credential_user_label") == "Smoke phone 2" for d in details),
+              "totp_replace: UPDATE_CREDENTIAL with pc_replaced = the old label and the new credential_id")
+        cred_id = new_id
+        page.goto(authorize_url(kc_action=f"CONFIGURE_TOTP:{secrets.token_hex(4)}-0000-4000-8000-{secrets.token_hex(6)}"))
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#portcullis-totp-refused").count() == 1 and page.locator("#totpSecret").count() == 0,
+              "totp_replace: an id that isn't theirs is refused before any QR code")
+        check([c["id"] for c in credentials_of(admin_token(), uid)] == [cred_id], "totp_replace: the unknown id changed nothing")
 
         # pc_method=totp on the SSO session: only the code form, then amr pwd + otp.
         page.goto(authorize_url(pc_method="totp"))
@@ -1115,16 +1161,65 @@ def totp_main():
         amr = amr_of(code) if code else []
         check("pwd" in amr and "otp" in amr, f"totp_pc_method_only_code: the step-up's amr has pwd and otp: {amr}")
 
-        # A forced re-authentication (delete_credential's, prompt=login) never offers the code.
+        # The fresh auth the Hub's popup asks for under a {totp} fresh set (prompt=login, max_age=0,
+        # pc_method=totp): the password first, then the code; pc_fresh=totp, amr pwd + otp.
+        page.goto(authorize_url(FRESH_CLIENT, prompt="login", max_age="0", pc_method="totp"))
+        page.wait_for_load_state("domcontentloaded")
+        not_an_error_page(page, "totp_fresh")
+        check(page.locator("#password").count() == 1 and page.locator("#otp").count() == 0,
+              "totp_fresh: the password first (a code is never the only proof)")
+        user = page.locator("#username")
+        if user.count() == 1 and user.is_editable():
+            user.fill("carol")
+        page.fill("#password", password)
+        page.locator("#kc-login").click()
+        page.wait_for_load_state("domcontentloaded")
+        check(page.locator("#otp").count() == 1, "totp_fresh: then the code")
+        page.fill("#otp", fresh_code(otp, used))
+        before = len(landed)
+        page.locator("#kc-login").click()
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed_since(before) or "")
+        claims = id_token_of(code, FRESH_CLIENT) if code else {}
+        check(claims.get("pc_fresh") == "totp", f"totp_fresh: pc_fresh=totp (got {claims.get('pc_fresh')!r})")
+        # smoke-fresh has no amr mapper (like the Hub's client): the session's amr through smoke.
+        before = len(landed)
+        page.goto(authorize_url())
+        page.wait_for_url("http://localhost:18081/**", timeout=30000)
+        code = code_of(landed_since(before) or "")
+        amr = amr_of(code) if code else []
+        check("pwd" in amr and "otp" in amr, f"totp_fresh: the session's amr has pwd and otp: {amr}")
+
+        # totp_reauth: a forced re-authentication (delete_credential's, prompt=login) never takes a code alone.
+        since = int(time.time() * 1000) - 1000
+        before = len(landed)
         page.goto(authorize_url(prompt="login", kc_action=f"delete_credential:{cred_id}"))
         page.wait_for_load_state("domcontentloaded")
-        check(page.locator("#otp").count() == 0, "totp_reauth: a re-authentication never shows the code form first")
-        if page.locator("#try-another-way").count() == 1:
-            page.locator("#try-another-way").click()
+        check(page.locator("#otp").count() == 0, "totp_reauth: no code form first")
+        check(page.locator("#try-another-way").count() == 1, "totp_reauth: \"Try another way\" is offered (password and passkey on)")
+        page.locator("#try-another-way").click()
+        page.wait_for_load_state("domcontentloaded")
+        check(page.get_by_text("Authenticator app", exact=True).count() == 0, "totp_reauth: \"Try another way\" doesn't offer the code")
+        # Select the code's execution by hand (as a crafted POST would) and post a right code.
+        flow, _ = http("GET", f"{KC}/admin/realms/{REALM}/authentication/flows/portcullis-signin/executions", token=admin_token())
+        otp_exec = next((e["id"] for e in flow or [] if e.get("providerId") == "portcullis-otp"), None)
+        check(otp_exec is not None, "totp_reauth: the portcullis-otp execution id")
+        if otp_exec and page.locator("#kc-select-credential-form").count() == 1:
+            page.evaluate("""id => { const f = document.getElementById('kc-select-credential-form');
+                let i = f.querySelector('input[name=authenticationExecution]');
+                if (!i) { i = document.createElement('input'); i.type = 'hidden'; i.name = 'authenticationExecution'; f.appendChild(i); }
+                i.value = id; f.submit(); }""", otp_exec)
             page.wait_for_load_state("domcontentloaded")
-            check(page.get_by_text("Authenticator app", exact=True).count() == 0,
-                  "totp_reauth: \"Try another way\" doesn't offer the code")
-        check(len(credentials_of(admin_token(), uid)) == 1, "totp_reauth: nothing removed")
+        if page.locator("#otp").count() == 1:
+            page.fill("#otp", fresh_code(otp, used))
+            page.locator("#kc-login").click()
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(1)
+        check(landed_since(before) is None, "totp_reauth: a code alone never completes the re-authentication")
+        tok = admin_token()
+        sent = [e["type"] for k in ("LOGIN", "UPDATE_CREDENTIAL", "REMOVE_CREDENTIAL") for e in events_of(tok, uid, k, since)]
+        check(not sent, f"totp_reauth: no LOGIN / credential event since ({sent})")
+        check([c["id"] for c in credentials_of(tok, uid)] == [cred_id], "totp_reauth: nothing removed")
         ctx.close()
 
         # all[password, totp]: the password, then the code (portcullis-template's step).
@@ -1154,15 +1249,25 @@ def totp_main():
         pg.wait_for_load_state("domcontentloaded")
         pg.fill("#otp", last)
         before = len(landed)
+        since = int(time.time() * 1000) - 1000
         pg.locator("#kc-login").click()
         pg.wait_for_load_state("domcontentloaded")
         time.sleep(1)
         check(landed_since(before) is None and pg.locator("#otp").count() == 1, "totp_replay_refused: the same code is refused")
+        errors = [e for e in events_of(admin_token(), uid, "LOGIN_ERROR", since)
+                  if e.get("error") == "invalid_user_credentials" and e.get("details", {}).get("pc_method") == "totp"]
+        check(bool(errors), "totp_replay_refused: a LOGIN_ERROR invalid_user_credentials with pc_method=totp")
+        # The positive control: the next code in the same form signs in (the refusal was the single-use store).
+        pg.fill("#otp", fresh_code(otp, used))
+        pg.locator("#kc-login").click()
+        pg.wait_for_url("http://localhost:18081/**", timeout=30000)
+        check(landed_since(before) is not None, "totp_replay_refused: a new code then signs in")
         three.close()
         browser.close()
 
     lines = log_lines()
-    check(bool(key) and not [l for l in lines if key in l or key.lower() in l], "totp: the key is never in Keycloak's log")
+    check(len(keys) == 2 and all(keys) and not [l for l in lines for k in keys if k in l or k.lower() in l],
+          "totp: the keys are never in Keycloak's log")
     check(not [l for l in lines if "otpauth:" in l], "totp: no otpauth: URI in Keycloak's log")
     bad = [l for l in lines if "portcullis" in l.lower() and re.search(r"\bERROR\b|Exception", l)]
     check(not bad, "totp: no error naming portcullis in Keycloak's log" + "".join("\n    " + l for l in bad[:10]))
