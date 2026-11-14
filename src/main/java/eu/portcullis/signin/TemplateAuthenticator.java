@@ -438,6 +438,11 @@ public class TemplateAuthenticator implements Authenticator {
 
     /** {@link #signinPage(AuthenticationFlowContext)} with the environment env. */
     static String signinPage(AuthenticationFlowContext context, Function<String, String> env) {
+        return signinPage(env, () -> accountUrl(context));
+    }
+
+    /** The env's {@code PORTCULLIS_SIGNIN_URL} when it is an http(s) URL, else fallback's. */
+    static String signinPage(Function<String, String> env, Supplier<String> fallback) {
         String v;
         try {
             v = env.apply(SIGNIN_URL_ENV);
@@ -451,14 +456,19 @@ public class TemplateAuthenticator implements Authenticator {
                 return v;
             }
         }
-        return accountUrl(context);
+        return fallback.get();
     }
 
     /** The account console's signing-in page of this realm. */
     static String accountUrl(AuthenticationFlowContext context) {
-        return KeycloakUriBuilder.fromUri(context.getUriInfo().getBaseUri())
+        return accountUrl(context.getUriInfo().getBaseUri(), context.getRealm().getName());
+    }
+
+    /** The account console's signing-in page of realm, under Keycloak's base URI. */
+    static String accountUrl(java.net.URI base, String realm) {
+        return KeycloakUriBuilder.fromUri(base)
                 .path("realms/{realm}/account/account-security/signing-in")
-                .build(context.getRealm().getName())
+                .build(realm)
                 .toString();
     }
 
