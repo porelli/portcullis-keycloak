@@ -24,6 +24,9 @@ public final class Rule {
     /** Items per group. */
     public static final int MAX_ITEMS = 8;
 
+    /** The alternative no rule may have: an authenticator code alone. */
+    private static final Set<String> CODE_ONLY = Set.of("totp");
+
     /** A rule nobody meets, with no alternatives (fail closed). */
     public static final Rule UNMEETABLE = new Rule(null, List.of());
 
@@ -44,9 +47,12 @@ public final class Rule {
     /**
      * Parses and validates a compiled rule. Anything that isn't one — a
      * leaf at the top, an unknown op or key, a missing key, an empty or
-     * over-full group, a leaf that isn't one of the six method ids (a
+     * over-full group, a leaf that isn't one of the seven method ids (a
      * family, an amr value, {@code inv}), groups nested deeper than 4
      * levels, more than 48 leaves — is an {@link IllegalArgumentException}.
+     * So is a rule with an alternative made of {@code totp} alone (contract
+     * §8.1 "Rules": an authenticator code is never a way in by itself; the
+     * Hub refuses such a rule on save, and every reader refuses it too).
      */
     public static Rule parse(JsonNode n) {
         if (n == null || !n.isObject()) {
@@ -60,6 +66,9 @@ public final class Rule {
         List<Set<String>> alts = new ArrayList<>();
         for (int s : alternatives(root)) {
             alts.add(methodsOf(s));
+        }
+        if (alts.contains(CODE_ONLY)) {
+            throw new IllegalArgumentException("compiled rule: an authenticator code alone is a way in");
         }
         return new Rule(root, Collections.unmodifiableList(alts));
     }

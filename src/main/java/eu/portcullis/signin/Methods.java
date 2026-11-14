@@ -25,13 +25,14 @@ public final class Methods {
     /** Every method, in canonical order (weakest first). */
     private static final List<Info> TABLE = List.of(
             new Info("password", "pwd", 10),
+            new Info("totp", "otp", 15),
             new Info("passkey_synced", "spk", 25),
             new Info("browser_cert", "file", 25),
             new Info("passkey_device", "dpk", 30),
             new Info("security_key", "hwk", 35),
             new Info("yubikey_cert", "mtls", 40));
 
-    /** The six method ids, in canonical order. */
+    /** The seven method ids, in canonical order. */
     public static final List<String> IDS = TABLE.stream().map(Info::id).toList();
 
     /** Methods that can't be switched on yet: off whatever the file says (none since sign-in part 2). */
@@ -40,7 +41,7 @@ public final class Methods {
     /** The three passkey kinds, weakest first. */
     public static final List<String> PASSKEY_KINDS = List.of("passkey_synced", "passkey_device", "security_key");
 
-    /** Whether id is one of the six method ids. */
+    /** Whether id is one of the seven method ids. */
     public static boolean known(String id) {
         return id != null && IDS.contains(id);
     }
@@ -76,7 +77,7 @@ public final class Methods {
         throw new IllegalArgumentException("not a sign-in method");
     }
 
-    /** The strength of method m in tenths (10, 25, 25, 30, 35, 40). */
+    /** The strength of method m in tenths (10, 15, 25, 25, 30, 35, 40). */
     public static int tenths(String m) {
         for (Info i : TABLE) {
             if (i.id().equals(m)) {

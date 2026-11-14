@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 class PcMethodTest {
     @Test
     void ignoresUnknownValues() {
-        for (String v : new String[] {"webauthn", "", "Security_Key", "security_key ", "family:passkey", "inv", "hwk", "browser-cert"}) {
+        for (String v : new String[] {"webauthn", "", "Security_Key", "security_key ", "family:passkey", "inv", "hwk", "browser-cert", "otp", "TOTP"}) {
             Flow f = new Flow();
             f.clientNotes.put(PcMethod.CLIENT_NOTE, v);
             assertEquals(Optional.empty(), PcMethod.requested(f.context), v);
@@ -20,7 +20,7 @@ class PcMethodTest {
 
     @Test
     void readsTheSixIdsAndPasskey() {
-        for (String v : new String[] {"password", "passkey_synced", "browser_cert", "passkey_device", "security_key", "yubikey_cert", "passkey"}) {
+        for (String v : new String[] {"password", "totp", "passkey_synced", "browser_cert", "passkey_device", "security_key", "yubikey_cert", "passkey"}) {
             Flow f = new Flow();
             f.clientNotes.put(PcMethod.CLIENT_NOTE, v);
             assertEquals(Optional.of(v), PcMethod.requested(f.context), v);
@@ -35,6 +35,17 @@ class PcMethodTest {
         assertEquals(Optional.of("yubikey_cert"), PcMethod.requested(f.context));
         f.authNotes.put(PcMethod.STEP_NOTE, "bogus");
         assertEquals(Optional.of("security_key"), PcMethod.requested(f.context));
+    }
+
+    @Test
+    void totpParsed() {
+        assertEquals(Optional.of("totp"), PcMethod.parse("totp"));
+        assertTrue(PcMethod.allows(Optional.of("totp"), "totp"));
+        assertFalse(PcMethod.allows(Optional.of("totp"), "password"));
+        assertFalse(PcMethod.allows(Optional.of("passkey"), "totp"), "a code is no passkey");
+        assertFalse(PcMethod.allows(Optional.of("password"), "totp"));
+        assertTrue(PcMethod.metBy("totp", java.util.Set.of("password", "totp")));
+        assertFalse(PcMethod.metBy("passkey", java.util.Set.of("totp")));
     }
 
     @Test

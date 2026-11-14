@@ -11,7 +11,7 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * note {@code client_request_param_pc_method}. {@code portcullis-template}
  * asks for a missing method the same way, through the authentication note
  * {@link #STEP_NOTE} (it wins over the client note: it is the newer ask).
- * Only the six method ids and {@code passkey} are read; anything else is
+ * Only the seven method ids and {@code passkey} are read; anything else is
  * ignored.
  */
 public final class PcMethod {
@@ -26,7 +26,7 @@ public final class PcMethod {
     /** Any passkey kind. */
     public static final String PASSKEY = "passkey";
 
-    /** The method the authentication asks for, if any (six ids or {@code passkey}). */
+    /** The method the authentication asks for, if any (seven ids or {@code passkey}). */
     public static Optional<String> requested(AuthenticationFlowContext context) {
         AuthenticationSessionModel a = context == null ? null : context.getAuthenticationSession();
         if (a == null) {
@@ -36,7 +36,7 @@ public final class PcMethod {
         return step.isPresent() ? step : parse(a.getClientNote(CLIENT_NOTE));
     }
 
-    /** v when it is one of the six method ids or {@code passkey}, exactly; else empty. */
+    /** v when it is one of the seven method ids or {@code passkey}, exactly; else empty. */
     static Optional<String> parse(String v) {
         if (v == null) {
             return Optional.empty();

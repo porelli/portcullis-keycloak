@@ -141,9 +141,35 @@ class RuleTest {
         assertEquals(List.of(Set.of("security_key")), r48.alternatives());
     }
 
+    /** A compiled rule with an alternative made of totp alone is refused, however it is nested. */
+    @Test
+    void codeOnlyAlternativeRefused() throws IOException {
+        String[] bad = {
+            "{\"op\":\"any\",\"items\":[\"totp\",\"security_key\"]}",
+            "{\"op\":\"any\",\"items\":[\"totp\"]}",
+            "{\"op\":\"all\",\"items\":[\"totp\"]}",
+            "{\"op\":\"all\",\"items\":[\"totp\",{\"op\":\"any\",\"items\":[\"totp\"]}]}",
+            "{\"op\":\"any\",\"items\":[\"totp\",{\"op\":\"all\",\"items\":[\"totp\",\"password\"]}]}",
+            "{\"op\":\"any\",\"items\":[\"security_key\",{\"op\":\"all\",\"items\":[{\"op\":\"any\",\"items\":[\"totp\"]}]}]}",
+            "{\"op\":\"all\",\"items\":[{\"op\":\"any\",\"items\":[\"totp\",\"password\"]},{\"op\":\"any\",\"items\":[\"totp\",\"yubikey_cert\"]}]}",
+        };
+        for (String b : bad) {
+            JsonNode n = JSON.readTree(b);
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Rule.parse(n), b);
+            assertEquals("compiled rule: an authenticator code alone is a way in", e.getMessage(), b);
+        }
+        Rule both = Rule.parse(JSON.readTree("{\"op\":\"all\",\"items\":[\"password\",\"totp\"]}"));
+        assertEquals(List.of(Set.of("password", "totp")), both.alternatives());
+        assertTrue(both.satisfiedBy(Set.of("password", "totp")));
+        assertFalse(both.satisfiedBy(Set.of("totp")));
+        assertFalse(both.satisfiedBy(Set.of("password")));
+        Rule mixed = Rule.parse(JSON.readTree("{\"op\":\"any\",\"items\":[\"security_key\",{\"op\":\"all\",\"items\":[\"passkey_synced\",\"totp\"]}]}"));
+        assertEquals(Set.of(Set.of("security_key"), Set.of("passkey_synced", "totp")), setOfSets(mixed.alternatives()));
+    }
+
     @Test
     void unmeetableMeetsNothing() {
-        assertFalse(Rule.UNMEETABLE.satisfiedBy(Set.of("password", "passkey_synced", "browser_cert",
+        assertFalse(Rule.UNMEETABLE.satisfiedBy(Set.of("password", "totp", "passkey_synced", "browser_cert",
                 "passkey_device", "security_key", "yubikey_cert")));
         assertTrue(Rule.UNMEETABLE.alternatives().isEmpty());
     }
@@ -151,16 +177,18 @@ class RuleTest {
     @Test
     void methodTable() {
         assertEquals("password", Methods.forAmr("pwd").orElseThrow());
+        assertEquals("totp", Methods.forAmr("otp").orElseThrow());
         assertEquals("passkey_synced", Methods.forAmr("spk").orElseThrow());
         assertEquals("browser_cert", Methods.forAmr("file").orElseThrow());
         assertEquals("passkey_device", Methods.forAmr("dpk").orElseThrow());
         assertEquals("security_key", Methods.forAmr("hwk").orElseThrow());
         assertEquals("yubikey_cert", Methods.forAmr("mtls").orElseThrow());
-        for (String a : new String[] {"inv", "HWK", "webauthn", "otp", "", "security_key"}) {
+        for (String a : new String[] {"inv", "HWK", "webauthn", "OTP", "sms", "", "security_key", "totp"}) {
             assertTrue(Methods.forAmr(a).isEmpty(), a);
         }
         assertTrue(Methods.forAmr(null).isEmpty());
         assertEquals(10, Methods.tenths("password"));
+        assertEquals(15, Methods.tenths("totp"));
         assertEquals(25, Methods.tenths("passkey_synced"));
         assertEquals(25, Methods.tenths("browser_cert"));
         assertEquals(30, Methods.tenths("passkey_device"));

@@ -65,7 +65,7 @@ class SigninConfigTest {
 
     private static void assertDenyAll(SigninConfig c, String why) {
         assertSame(SigninConfig.DENY_ALL, c, why);
-        for (String m : new String[] {"password", "passkey_synced", "browser_cert", "passkey_device", "security_key", "yubikey_cert"}) {
+        for (String m : Methods.IDS) {
             assertFalse(c.on(m), why + ": " + m + " on");
         }
         assertFalse(c.addStronger(), why);
@@ -73,7 +73,7 @@ class SigninConfigTest {
         // Every client fails, listed or not: never "unlisted, left to group-gate".
         for (String client : new String[] {"nextcloud", "unlisted", "account-console"}) {
             Rule r = c.templateForClient(client).orElseThrow();
-            assertFalse(r.satisfiedBy(Set.of("password", "passkey_synced", "passkey_device", "security_key", "yubikey_cert")), why);
+            assertFalse(r.satisfiedBy(Set.copyOf(Methods.IDS)), why);
         }
         assertTrue(c.authenticator(UUID.fromString(AAGUID)).isEmpty(), why);
     }
@@ -186,6 +186,28 @@ class SigninConfigTest {
         assertTrue(t.roots().isEmpty());
 
         assertDenyAll(SigninConfig.load(write(dir, "certified.json", empty)), "certified + []");
+    }
+
+    /** "totp" sorts after "passkey_synced" (the Hub sorts the ids lexicographically). */
+    @Test
+    void methodsTotpSortedLast(@TempDir Path dir) throws Exception {
+        String sorted = valid().replace("\"passkey_synced\", \"security_key\", \"yubikey_cert\"]", "\"passkey_synced\", \"security_key\", \"totp\", \"yubikey_cert\"]")
+                .replace("\"items\": [\"security_key\", \"yubikey_cert\"]", "\"items\": [\"security_key\", {\"op\": \"all\", \"items\": [\"passkey_synced\", \"totp\"]}]");
+        SigninConfig c = SigninConfig.load(write(dir, "ok.json", sorted));
+        assertNotSame(SigninConfig.DENY_ALL, c);
+        assertTrue(c.on("totp"));
+        assertEquals(java.util.List.of(Set.of("security_key"), Set.of("passkey_synced", "totp")),
+                c.templateForClient("nextcloud-office").orElseThrow().alternatives());
+
+        String two = """
+            {"version": 1, "methods": [%s], "add_stronger": false, "templates": {}, "clients": {},
+             "authenticators": {}, "mds": {"serial": 1, "next_update": "2026-12-01T00:00:00Z"}}""";
+        assertTrue(SigninConfig.load(write(dir, "two.json", two.formatted("\"passkey_synced\", \"totp\""))).on("totp"));
+        assertDenyAll(SigninConfig.load(write(dir, "unsorted.json", two.formatted("\"totp\", \"passkey_synced\""))), "totp before passkey_synced");
+        // A template with a code-only alternative refuses the whole file.
+        String codeOnly = valid().replace("\"passkey_synced\", \"security_key\", \"yubikey_cert\"]", "\"passkey_synced\", \"security_key\", \"totp\", \"yubikey_cert\"]")
+                .replace("\"items\": [\"security_key\", \"yubikey_cert\"]", "\"items\": [\"security_key\", \"totp\"]");
+        assertDenyAll(SigninConfig.load(write(dir, "code-only.json", codeOnly)), "a code-only alternative");
     }
 
     @Test
