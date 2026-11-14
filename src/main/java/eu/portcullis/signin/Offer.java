@@ -22,7 +22,8 @@ import org.keycloak.models.UserModel;
  * known method; a passkey while a passkey kind is on and allowed; an
  * authenticator-app code while {@code totp} is on and allowed and the known
  * account (never one still to be typed) may use one and has an {@code otp}
- * credential.
+ * credential, and this authentication already holds another method (a code
+ * is never the only proof).
  * Anything else is kept.
  */
 final class Offer {
@@ -38,13 +39,15 @@ final class Offer {
         RealmModel realm = context.getRealm();
         X509Authenticator x509 = new X509Authenticator(false, () -> cfg);
         Predicate<AuthenticatorConfigModel> presented = c -> x509.presentsOwnLeaf(context, c);
+        boolean primary = OtpAuthenticator.primaryDone(context, cfg);
         context.setAuthenticationSelections(options.stream()
-                .filter(o -> usable(realm, o.getAuthenticationExecution(), requested, known, cfg, presented))
+                .filter(o -> usable(realm, o.getAuthenticationExecution(), requested, known, primary, cfg, presented))
                 .toList());
     }
 
-    static boolean usable(RealmModel realm, AuthenticationExecutionModel e, Optional<String> requested, UserModel known, SigninConfig cfg,
-            Predicate<AuthenticatorConfigModel> presented) {
+    /** primary: this authentication already holds a method other than a code ({@link OtpAuthenticator#primaryDone}). */
+    static boolean usable(RealmModel realm, AuthenticationExecutionModel e, Optional<String> requested, UserModel known, boolean primary,
+            SigninConfig cfg, Predicate<AuthenticatorConfigModel> presented) {
         String authenticator = e == null ? null : e.getAuthenticator();
         if (PasswordFormFactory.PROVIDER_ID.equals(authenticator)) {
             return cfg.on(PasswordForm.PASSWORD) && PcMethod.allows(requested, PasswordForm.PASSWORD)
@@ -57,7 +60,7 @@ final class Offer {
         }
         if (OtpAuthenticatorFactory.PROVIDER_ID.equals(authenticator)) {
             return cfg.on(OtpAuthenticator.TOTP) && PcMethod.allows(requested, OtpAuthenticator.TOTP) && known != null
-                    && OtpAuthenticator.usable(known, cfg);
+                    && primary && OtpAuthenticator.usable(known, cfg);
         }
         if (PasskeyAuthenticatorFactory.PROVIDER_ID.equals(authenticator)) {
             return Methods.PASSKEY_KINDS.stream().anyMatch(k -> cfg.on(k) && PcMethod.allows(requested, k));

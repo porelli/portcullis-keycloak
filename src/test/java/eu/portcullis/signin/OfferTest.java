@@ -123,20 +123,26 @@ class OfferTest {
         assertFalse(offeredWithOtp(none, on).contains("portcullis-otp"), "no otp credential");
         Flow alice = new Flow();
         alice.user = alice.person("u-alice", "alice").otp("otp-1", "phone").model;
+        assertFalse(offeredWithOtp(alice, on).contains("portcullis-otp"), "known, but no other method completed yet");
+        alice.completed("pwd");
         assertEquals(List.of("portcullis-passkey", "portcullis-password-form", "portcullis-otp"), offeredWithOtp(alice, on));
         Flow off = new Flow();
         off.user = off.person("u-alice", "alice").otp("otp-1", "phone").model;
+        off.completed("pwd");
         assertFalse(offeredWithOtp(off, Configs.of(Configs.WITH_PASSWORD, false, "", "")).contains("portcullis-otp"), "totp off");
         Flow asked = new Flow();
         asked.user = asked.person("u-alice", "alice").otp("otp-1", "phone").model;
+        asked.completed("pwd");
         asked.clientNotes.put(PcMethod.CLIENT_NOTE, "security_key");
         assertFalse(offeredWithOtp(asked, on).contains("portcullis-otp"), "pc_method asks another");
         Flow code = new Flow();
         code.user = code.person("u-alice", "alice").otp("otp-1", "phone").model;
+        code.completed("pwd");
         code.clientNotes.put(PcMethod.CLIENT_NOTE, "totp");
         assertEquals(List.of("portcullis-otp"), offeredWithOtp(code, on).stream().filter(s -> !s.equals("portcullis-passkey")).toList());
         Flow admin = new Flow();
         admin.user = admin.person("u-admin", "admin").otp("otp-1", "phone").model;
+        admin.completed("hwk");
         assertFalse(offeredWithOtp(admin, on).contains("portcullis-otp"), "admin");
     }
 

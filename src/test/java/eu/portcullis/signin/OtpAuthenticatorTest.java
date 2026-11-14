@@ -137,6 +137,71 @@ class OtpAuthenticatorTest {
         assertSteppedAside(c, "impersonated identity cookie");
     }
 
+    /**
+     * A code is never the only proof: a known person (a username, a forced
+     * re-authentication's auth-cookie) without another method completed in
+     * this authentication never gets the code form, and a posted code is
+     * never checked.
+     */
+    @Test
+    void neverWithoutAPrimaryFactor() {
+        // A username only (the user set, nothing completed): no form, no session.
+        Flow named = new Flow();
+        named.user = named.person("u-alice", "alice").otp("otp-1", "phone").model;
+        Flow.Person p = named.people().get(0);
+        p.otpValid = i -> true; // even a right code
+        otp(ON).authenticate(named.context);
+        assertSteppedAside(named, "a username only");
+        named.form.add("otp", "654321");
+        named.form.add("selectedCredentialId", "otp-1");
+        otp(ON).action(named.context);
+        assertEquals(FlowStatus.ATTEMPTED, named.status, "refused without checking the code");
+        assertTrue(p.checked.isEmpty(), "the code was never checked: nothing says whether it was right");
+        assertNull(named.authNotes.get(OtpAuthenticator.METHOD_NOTE));
+        assertFalse(OtpAuthenticator.primaryDone(named.context, ON));
+
+        // A forced re-authentication (delete_credential / CONFIGURE_TOTP's max_auth_age, prompt=login):
+        // auth-cookie sets the user, the re-authentication completed nothing itself.
+        Flow reauth = new Flow();
+        reauth.user = reauth.person("u-alice", "alice").otp("otp-1", "phone").model;
+        reauth.clientNotes.put(org.keycloak.models.Constants.KC_ACTION, "delete_credential");
+        reauth.clientNotes.put(org.keycloak.models.Constants.KC_ACTION_PARAMETER, "otp-1");
+        otp(ON).authenticate(reauth.context);
+        assertSteppedAside(reauth, "a delete_credential re-authentication with only a code");
+
+        // Only a code completed so far (another otp execution): still no primary.
+        Flow codeOnly = aliceWithCode();
+        codeOnly.completed("otp");
+        otp(ON).authenticate(codeOnly.context);
+        assertSteppedAside(codeOnly, "a code is not a primary factor");
+        // A switched-off method doesn't count as one.
+        Flow offPwd = aliceWithCode();
+        otp(Configs.of("\"passkey_synced\", \"totp\"", false, "", "")).authenticate(offPwd.context);
+        assertSteppedAside(offPwd, "the password is off");
+
+        // Any other method completed first: the form.
+        for (String amr : new String[] {"pwd", "spk", "hwk", "mtls"}) {
+            Flow f = new Flow();
+            f.user = f.person("u-alice", "alice").otp("otp-1", "phone").model;
+            f.completed(amr);
+            otp(ON).authenticate(f.context);
+            assertEquals(FlowStatus.CHALLENGE, f.status, amr);
+        }
+    }
+
+    /** A password, then a code: the authentication holds both (amr pwd, otp through the stock mapper). */
+    @Test
+    void passwordThenCode() {
+        Flow f = aliceWithCode();
+        person(f).otpValid = i -> "654321".equals(i.getChallengeResponse());
+        f.form.add("otp", "654321");
+        f.form.add("selectedCredentialId", "otp-1");
+        otp(ON).action(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        f.completed("pwd", "otp"); // Keycloak records the otp-config execution's reference
+        assertEquals(java.util.Set.of("password", "totp"), Methods.ofAuthentication(f.realm, f.authSession, ON));
+    }
+
     @Test
     void asksForTheCode() {
         Flow f = aliceWithCode();

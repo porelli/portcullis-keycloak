@@ -21,10 +21,17 @@ import org.keycloak.services.managers.AuthenticationManager;
  * {@link PasskeyAuthenticator}).
  *
  * <ul>
- * <li>It never identifies a person: it steps aside ({@code attempted}) unless
- * all of {@link #steps} hold — {@code totp} is on, the user is already known
- * in this authentication (a {@code portcullis-template} step, a step-up, a
- * re-authentication), the user has an {@code otp} credential and isn't
+ * <li>It never identifies a person and is never the only proof: it steps
+ * aside ({@code attempted}) unless all of {@link #steps} hold — {@code totp}
+ * is on, the user is already known in this authentication, <b>this
+ * authentication already holds another switched-on method</b>
+ * ({@link #primaryDone}: a password, a passkey kind or a certificate among
+ * {@link Methods#ofAuthentication} — the executions this authentication
+ * completed, plus an SSO session's that {@code auth-cookie} carried over
+ * for a step-up; a forced re-authentication — {@code prompt=login}, a
+ * required action's {@code max_auth_age}, {@code delete_credential} or
+ * {@code CONFIGURE_TOTP} — counts only what it completed itself, so a code
+ * alone never completes one), the user has an {@code otp} credential and isn't
  * {@code admin} / {@code portcullis-hub} ({@link PasswordForm#refused}),
  * {@code pc_method} is absent or {@code totp}, and the session isn't
  * impersonated (T13: the person's code is never asked for; {@code
@@ -83,6 +90,21 @@ public class OtpAuthenticator implements Authenticator {
         }
     }
 
+    /**
+     * Whether this authentication already completed a switched-on method
+     * other than {@code totp} (its completed executions within their max age,
+     * {@link Methods#ofAuthentication}). Unreadable: false.
+     */
+    static boolean primaryDone(AuthenticationFlowContext c, SigninConfig cfg) {
+        try {
+            java.util.Set<String> done = Methods.ofAuthentication(c.getRealm(), c.getAuthenticationSession(), cfg);
+            done.remove(TOTP);
+            return !done.isEmpty();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     /** Whether this authentication may ask for and check a code; false = {@code attempted}. */
     static boolean steps(AuthenticationFlowContext c, SigninConfig cfg) {
         return steps(c, cfg, (s, r) -> AuthenticationManager.authenticateIdentityCookie(s, r, true));
@@ -90,7 +112,7 @@ public class OtpAuthenticator implements Authenticator {
 
     static boolean steps(AuthenticationFlowContext c, SigninConfig cfg,
             BiFunction<KeycloakSession, RealmModel, AuthenticationManager.AuthResult> identity) {
-        if (c == null || !usable(c.getUser(), cfg) || !PcMethod.allows(PcMethod.requested(c), TOTP)) {
+        if (c == null || !usable(c.getUser(), cfg) || !PcMethod.allows(PcMethod.requested(c), TOTP) || !primaryDone(c, cfg)) {
             return false;
         }
         try {
