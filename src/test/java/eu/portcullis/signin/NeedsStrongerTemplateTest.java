@@ -145,9 +145,10 @@ class NeedsStrongerTemplateTest {
         NeedsStronger pwd = NeedsStronger.of("Gitea", Set.of("password"), code, Set.of(), false, signin);
         assertTrue(pwd.isAskAdmin());
         assertFalse(pwd.isSetUpAuthenticator(), "a password session (1.0) can't add a code");
-        assertTrue(pwd.getAlternatives().get(0).isNotSetUp());
+        assertFalse(pwd.getAlternatives().get(0).isNotSetUp());
+        assertTrue(pwd.getAlternatives().get(0).isNoAuthenticator());
         String html = render(pwd).replaceAll("\\s+", " ");
-        assertTrue(html.contains("<li>a password and a code from an authenticator app <span class=\"portcullis-sub\">"), html);
+        assertTrue(html.contains("<li>a password and a code from an authenticator app <span class=\"portcullis-sub\">— you don&#39;t have an authenticator app yet</span></li>"), html);
         assertFalse(html.contains("portcullis-set-up-authenticator"), html);
 
         NeedsStronger spk = NeedsStronger.of("Gitea", Set.of("passkey_synced"), code, Set.of(), false, signin);
@@ -162,6 +163,11 @@ class NeedsStrongerTemplateTest {
         NeedsStronger has = NeedsStronger.of("Gitea", Set.of("passkey_synced"), code, Set.of("totp"), false, signin);
         assertFalse(has.isSetUpAuthenticator(), "already set up");
         assertFalse(has.getAlternatives().get(0).isNotSetUp());
+        assertFalse(has.getAlternatives().get(0).isNoAuthenticator());
+        // A passkey kind missing too: the passkey's words win (as group-gate).
+        NeedsStronger both = NeedsStronger.of("Gitea", Set.of("password"), List.of(Set.of("passkey_synced", "totp")), Set.of(), false, signin);
+        assertTrue(both.getAlternatives().get(0).isNotSetUp());
+        assertFalse(both.getAlternatives().get(0).isNoAuthenticator());
     }
 
     @Test

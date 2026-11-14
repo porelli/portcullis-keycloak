@@ -195,7 +195,7 @@ class TemplateAuthenticatorTest {
         assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, "no code to ask for: the page");
         assertEquals(TemplateAuthenticator.PAGE, f.page);
         NeedsStronger page = (NeedsStronger) f.formAttributes.get(TemplateAuthenticator.ATTRIBUTE);
-        assertTrue(page.getAlternatives().get(0).isNotSetUp());
+        assertTrue(page.getAlternatives().get(0).isNoAuthenticator());
         assertFalse(page.isSetUpAuthenticator(), "a password session can't add a code (add_stronger off)");
         assertTrue(page.isAskAdmin());
 

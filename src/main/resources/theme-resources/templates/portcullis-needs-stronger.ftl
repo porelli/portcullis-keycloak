@@ -28,7 +28,7 @@
             </p>
             <ul>
                 <#list portcullis.alternatives as alternative>
-                    <li><@methods list=alternative.methods/><#if alternative.notSetUp> <span class="portcullis-sub">— ${msg("portcullisNeedsStrongerNotSetUp")}</span></#if></li>
+                    <li><@methods list=alternative.methods/><#if alternative.notSetUp> <span class="portcullis-sub">— ${msg("portcullisNeedsStrongerNotSetUp")}</span><#elseif alternative.noAuthenticator> <span class="portcullis-sub">— ${msg("portcullisNeedsStrongerNoAuthenticator")}</span></#if></li>
                 </#list>
             </ul>
             <p>

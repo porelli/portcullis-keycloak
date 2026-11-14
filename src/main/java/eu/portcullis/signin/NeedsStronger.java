@@ -24,14 +24,25 @@ public final class NeedsStronger {
      */
     public static final String BANNER = ImpersonationResource.BANNER;
 
-    /** One alternative: its methods, and whether it needs a passkey kind or a code the person hasn't set up. */
+    /**
+     * One alternative: its methods, whether it needs a passkey kind the person
+     * hasn't set up ("you don't have one yet"), and else whether it needs a
+     * code they haven't set up ("you don't have an authenticator app yet",
+     * group-gate's words).
+     */
     public static final class Line {
         private final List<String> methods;
         private final boolean notSetUp;
+        private final boolean noAuthenticator;
 
-        Line(List<String> methods, boolean notSetUp) {
+        Line(List<String> methods, boolean notSetUp, boolean noAuthenticator) {
             this.methods = List.copyOf(methods);
             this.notSetUp = notSetUp;
+            this.noAuthenticator = !notSetUp && noAuthenticator;
+        }
+
+        public boolean isNoAuthenticator() {
+            return noAuthenticator;
         }
 
         public List<String> getMethods() {
@@ -85,16 +96,19 @@ public final class NeedsStronger {
         Set<String> missingAll = new LinkedHashSet<>();
         for (Set<String> alt : alternatives) {
             boolean notSetUp = false;
+            boolean noCode = false;
             for (String m : alt) {
                 if (have.contains(m)) {
                     continue;
                 }
                 missingAll.add(m);
-                if (settable(m) && !setUp.contains(m)) {
+                if (Methods.PASSKEY_KINDS.contains(m) && !setUp.contains(m)) {
                     notSetUp = true;
+                } else if (OtpAuthenticator.TOTP.equals(m) && !setUp.contains(m)) {
+                    noCode = true;
                 }
             }
-            lines.add(new Line(sorted(alt), notSetUp));
+            lines.add(new Line(sorted(alt), notSetUp, noCode));
         }
         boolean passkey = false;
         boolean securityKey = false;
