@@ -19,7 +19,10 @@ import org.keycloak.models.UserModel;
  * {@code yubikey_cert} or {@code browser_cert}) is on and allowed and this
  * request presents a leaf its CA issued (both executions show the provider's
  * one display name: without a leaf neither can sign in), never one without a
- * known method; a passkey while a passkey kind is on and allowed.
+ * known method; a passkey while a passkey kind is on and allowed; an
+ * authenticator-app code while {@code totp} is on and allowed and the known
+ * account (never one still to be typed) may use one and has an {@code otp}
+ * credential.
  * Anything else is kept.
  */
 final class Offer {
@@ -51,6 +54,10 @@ final class Offer {
             AuthenticatorConfigModel c = config(realm, e);
             String m = X509Authenticator.method(c);
             return m != null && cfg.on(m) && PcMethod.allows(requested, m) && presented.test(c);
+        }
+        if (OtpAuthenticatorFactory.PROVIDER_ID.equals(authenticator)) {
+            return cfg.on(OtpAuthenticator.TOTP) && PcMethod.allows(requested, OtpAuthenticator.TOTP) && known != null
+                    && OtpAuthenticator.usable(known, cfg);
         }
         if (PasskeyAuthenticatorFactory.PROVIDER_ID.equals(authenticator)) {
             return Methods.PASSKEY_KINDS.stream().anyMatch(k -> cfg.on(k) && PcMethod.allows(requested, k));

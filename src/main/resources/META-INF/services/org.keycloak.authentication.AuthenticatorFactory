@@ -5,3 +5,4 @@ eu.portcullis.signin.MethodAuthenticatorFactory
 eu.portcullis.signin.PasswordFormFactory
 eu.portcullis.signin.X509AuthenticatorFactory
 eu.portcullis.signin.TemplateAuthenticatorFactory
+eu.portcullis.signin.OtpAuthenticatorFactory

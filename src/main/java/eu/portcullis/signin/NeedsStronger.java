@@ -24,7 +24,7 @@ public final class NeedsStronger {
      */
     public static final String BANNER = ImpersonationResource.BANNER;
 
-    /** One alternative: its methods, and whether it needs a passkey kind the person hasn't set up. */
+    /** One alternative: its methods, and whether it needs a passkey kind or a code the person hasn't set up. */
     public static final class Line {
         private final List<String> methods;
         private final boolean notSetUp;
@@ -48,16 +48,18 @@ public final class NeedsStronger {
     private final List<Line> alternatives;
     private final boolean setUpPasskey;
     private final boolean setUpSecurityKey;
+    private final boolean setUpAuthenticator;
     private final boolean askAdmin;
     private final String signinUrl;
 
     NeedsStronger(String app, List<String> signedIn, List<Line> alternatives, boolean setUpPasskey,
-            boolean setUpSecurityKey, boolean askAdmin, String signinUrl) {
+            boolean setUpSecurityKey, boolean setUpAuthenticator, boolean askAdmin, String signinUrl) {
         this.app = app;
         this.signedIn = List.copyOf(signedIn);
         this.alternatives = List.copyOf(alternatives);
         this.setUpPasskey = setUpPasskey;
         this.setUpSecurityKey = setUpSecurityKey;
+        this.setUpAuthenticator = setUpAuthenticator;
         this.askAdmin = askAdmin;
         this.signinUrl = signinUrl;
     }
@@ -66,8 +68,12 @@ public final class NeedsStronger {
      * The page for a rule the session doesn't meet. A passkey kind the person
      * lacks gets a set-up link ("Set up a passkey" for synced / device-bound,
      * "Set up a security key") while {@code add_stronger} is on or the kind is
-     * no stronger than the session's strongest method; otherwise, and always
-     * for passwords and certificates, the page says "ask your admin".
+     * no stronger than the session's strongest method; a missing {@code totp}
+     * the person hasn't set up gets "Set up an authenticator app" the same way
+     * (T16: add_stronger on, or 1.5 no stronger than the session); otherwise,
+     * and always for passwords and certificates, the page says "ask your
+     * admin". {@code setUp} holds the methods the person has set up
+     * ({@link TemplateAuthenticator#setUp}).
      */
     static NeedsStronger of(String app, Set<String> have, List<Set<String>> alternatives, Set<String> setUp,
             boolean addStronger, String signinUrl) {
@@ -84,7 +90,7 @@ public final class NeedsStronger {
                     continue;
                 }
                 missingAll.add(m);
-                if (Methods.PASSKEY_KINDS.contains(m) && !setUp.contains(m)) {
+                if (settable(m) && !setUp.contains(m)) {
                     notSetUp = true;
                 }
             }
@@ -92,9 +98,10 @@ public final class NeedsStronger {
         }
         boolean passkey = false;
         boolean securityKey = false;
+        boolean authenticator = false;
         boolean askAdmin = false;
         for (String m : missingAll) {
-            if (!Methods.PASSKEY_KINDS.contains(m)) {
+            if (!settable(m)) {
                 askAdmin = true; // passwords and certificates: only an admin sets them up
                 continue;
             }
@@ -102,7 +109,9 @@ public final class NeedsStronger {
                 continue;
             }
             if (addStronger || Methods.tenths(m) <= strongest) {
-                if ("security_key".equals(m)) {
+                if (OtpAuthenticator.TOTP.equals(m)) {
+                    authenticator = true;
+                } else if ("security_key".equals(m)) {
                     securityKey = true;
                 } else {
                     passkey = true;
@@ -111,7 +120,12 @@ public final class NeedsStronger {
                 askAdmin = true;
             }
         }
-        return new NeedsStronger(app, sorted(have), lines, passkey, securityKey, askAdmin, signinUrl);
+        return new NeedsStronger(app, sorted(have), lines, passkey, securityKey, authenticator, askAdmin, signinUrl);
+    }
+
+    /** Methods a person sets up on the Sign-in page: the passkey kinds and an authenticator app. */
+    private static boolean settable(String m) {
+        return Methods.PASSKEY_KINDS.contains(m) || OtpAuthenticator.TOTP.equals(m);
     }
 
     private static List<String> sorted(Set<String> methods) {
@@ -142,6 +156,10 @@ public final class NeedsStronger {
 
     public boolean isSetUpSecurityKey() {
         return setUpSecurityKey;
+    }
+
+    public boolean isSetUpAuthenticator() {
+        return setUpAuthenticator;
     }
 
     public boolean isAskAdmin() {

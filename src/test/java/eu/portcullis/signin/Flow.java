@@ -98,6 +98,8 @@ final class Flow {
 
     final RealmModel realm;
     final KeycloakSession session;
+    /** Keycloak's own OTP credential provider ({@code keycloak-otp}), over this session. */
+    private final CredentialProvider<?>[] otpProvider = new CredentialProvider<?>[1];
     /** The stand-ins behind realm, session and the session's context: a test adds answers. */
     final Fake realmFake;
     final Fake sessionFake;
@@ -171,8 +173,9 @@ final class Flow {
                 .ret("getContext", keycloakContext)
                 .ret("getKeycloakSessionFactory", factory)
                 .ret("getAttributes", new HashMap<>())
-                .on("getProvider", a -> providers.get((Class<?>) a[0]));
+                .on("getProvider", a -> a.length == 2 && "keycloak-otp".equals(a[1]) ? otpProvider[0] : providers.get((Class<?>) a[0]));
         session = sessionFake.as(KeycloakSession.class);
+        otpProvider[0] = new org.keycloak.credential.OTPCredentialProvider(session);
         providers.put(CredentialProvider.class,
                 new WebAuthnPasswordlessCredentialProvider(session, new WebAuthnMetadataService(), new ObjectConverter()));
         forms = Fake.named("forms")
@@ -195,6 +198,10 @@ final class Flow {
                 })
                 .on("createLoginWebAuthn", a -> {
                     page = "webauthn-authenticate";
+                    return null;
+                })
+                .on("createLoginTotp", a -> {
+                    page = "login-otp";
                     return null;
                 })
                 .on("createLoginUsernamePassword", a -> {
@@ -324,6 +331,8 @@ final class Flow {
         final Map<String, List<CredentialModel>> credentials = new HashMap<>();
         final List<CredentialInput> checked = new ArrayList<>();
         Predicate<CredentialInput> passkeyValid = i -> true;
+        /** The authenticator-app codes that verify (none by default). */
+        Predicate<CredentialInput> otpValid = i -> false;
         final UserModel model;
         /** The stand-in behind model: a test adds answers (groups, required actions, …). */
         final Fake fake;
@@ -334,6 +343,10 @@ final class Flow {
             SubjectCredentialManager manager = Fake.named("credentials " + username)
                     .on("getStoredCredentialsByTypeStream", a -> credentials.getOrDefault((String) a[0], List.of()).stream())
                     .on("isConfiguredFor", a -> !credentials.getOrDefault((String) a[0], List.of()).isEmpty())
+                    .on("getStoredCredentialById", a -> credentials.values().stream().flatMap(List::stream)
+                            .filter(c -> c.getId().equals(a[0])).findFirst().orElse(null))
+                    .on("removeStoredCredentialById", a -> credentials.values().stream()
+                            .anyMatch(l -> l.removeIf(c -> c.getId().equals(a[0]))))
                     .on("isValid", a -> {
                         @SuppressWarnings("unchecked")
                         List<CredentialInput> in = a[0] instanceof List ? (List<CredentialInput>) a[0] : List.of((CredentialInput[]) a[0]);
@@ -341,7 +354,7 @@ final class Flow {
                             checked.add(i);
                             boolean ok = "password".equals(i.getType())
                                     ? password != null && password.equals(i.getChallengeResponse())
-                                    : passkeyValid.test(i);
+                                    : "otp".equals(i.getType()) ? otpValid.test(i) : passkeyValid.test(i);
                             if (!ok) {
                                 return false;
                             }
@@ -355,6 +368,17 @@ final class Flow {
                     .ret("isEnabled", true)
                     .ret("credentialManager", manager);
             model = fake.as(UserModel.class);
+        }
+
+        /** A stored authenticator app (credential type otp) with this id and label. */
+        Person otp(String credentialId, String label) {
+            CredentialModel c = new CredentialModel();
+            c.setId(credentialId);
+            c.setType("otp");
+            c.setUserLabel(label);
+            c.setCreatedDate(Time.currentTimeMillis());
+            credentials.computeIfAbsent("otp", k -> new ArrayList<>()).add(c);
+            return this;
         }
 
         /** A stored passkey of credential type t with this credential id. */

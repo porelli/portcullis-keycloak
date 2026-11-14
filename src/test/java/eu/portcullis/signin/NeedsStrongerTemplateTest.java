@@ -137,6 +137,33 @@ class NeedsStrongerTemplateTest {
         assertFalse(render(page).contains("You are signed in as"), "no banner outside an impersonation");
     }
 
+    /** T16: the authenticator set-up link while add_stronger is on or 1.5 is no stronger than the session. */
+    @Test
+    void authenticatorLink() throws Exception {
+        String signin = "https://people.example.com/signin";
+        List<Set<String>> code = List.of(Set.of("password", "totp"));
+        NeedsStronger pwd = NeedsStronger.of("Gitea", Set.of("password"), code, Set.of(), false, signin);
+        assertTrue(pwd.isAskAdmin());
+        assertFalse(pwd.isSetUpAuthenticator(), "a password session (1.0) can't add a code");
+        assertTrue(pwd.getAlternatives().get(0).isNotSetUp());
+        String html = render(pwd).replaceAll("\\s+", " ");
+        assertTrue(html.contains("<li>a password and a code from an authenticator app <span class=\"portcullis-sub\">"), html);
+        assertFalse(html.contains("portcullis-set-up-authenticator"), html);
+
+        NeedsStronger spk = NeedsStronger.of("Gitea", Set.of("passkey_synced"), code, Set.of(), false, signin);
+        assertTrue(spk.isSetUpAuthenticator());
+        assertTrue(spk.isAskAdmin(), "the password is the admin's");
+        String linked = render(spk).replaceAll("\\s+", " ");
+        assertTrue(linked.contains("id=\"portcullis-set-up-authenticator\""), linked);
+        assertTrue(linked.contains("href=\"" + signin + "\">Set up an authenticator app</a>"), linked);
+        assertTrue(linked.contains("a code from an authenticator app"), linked);
+
+        assertTrue(NeedsStronger.of("Gitea", Set.of("password"), code, Set.of(), true, signin).isSetUpAuthenticator(), "add_stronger on");
+        NeedsStronger has = NeedsStronger.of("Gitea", Set.of("passkey_synced"), code, Set.of("totp"), false, signin);
+        assertFalse(has.isSetUpAuthenticator(), "already set up");
+        assertFalse(has.getAlternatives().get(0).isNotSetUp());
+    }
+
     @Test
     void neverUnescapes() throws Exception {
         String ftl = Files.readString(Path.of("src/main/resources/theme-resources/templates", TemplateAuthenticator.PAGE));

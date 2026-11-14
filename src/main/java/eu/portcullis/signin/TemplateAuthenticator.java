@@ -46,7 +46,8 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  * person and the executions completed so far kept, so an {@code all}
  * template is met step by step. Candidates as group-gate's step-up (§5):
  * for each alternative lacking exactly one method, that method — a passkey
- * kind only when the person has one (their Keycloak credentials), a password
+ * kind or a code ({@code totp}) only when the person has one (their Keycloak
+ * credentials; a code also only for an account that may use one), a password
  * or a YubiKey certificate (unknown) only when it can be completed here (a
  * password for an account that may use one; a certificate presented on this
  * request that Keycloak's X.509 mapping resolves to this person); the first
@@ -65,8 +66,9 @@ import org.keycloak.sessions.AuthenticationSessionModel;
  *
  * <p>It also writes {@link FreshMapper#NOTE}, the method that signed in
  * this authentication ({@code portcullis.passkey.kind},
- * {@code portcullis.x509.method} or {@code portcullis.password.method}; the
- * strongest by D1 strength while on when several ran — e.g. a password then
+ * {@code portcullis.x509.method}, {@code portcullis.otp.method} or
+ * {@code portcullis.password.method}; the strongest by D1 strength while on
+ * when several ran — e.g. a password then
  * a step-up passkey; else {@code none}), as a client note: the only input of
  * {@code portcullis-fresh}.
  *
@@ -93,7 +95,7 @@ public class TemplateAuthenticator implements Authenticator {
 
     /** Notes carried over a step's flow reset (Keycloak's reset clears every authentication note). */
     private static final List<String> KEPT_NOTES = List.of(PasskeyAuthenticator.KIND_NOTE, X509Authenticator.METHOD_NOTE,
-            PasswordForm.METHOD_NOTE, CookieAuthenticator.SSO_NOTE);
+            PasswordForm.METHOD_NOTE, OtpAuthenticator.METHOD_NOTE, CookieAuthenticator.SSO_NOTE);
     /** The Keycloak env naming the Sign-in page (core: {@code https://people.<domain>/signin}). */
     static final String SIGNIN_URL_ENV = "PORTCULLIS_SIGNIN_URL";
 
@@ -183,6 +185,7 @@ public class TemplateAuthenticator implements Authenticator {
         Predicate<String> completable = m -> switch (m) {
             case "password" -> !PasswordForm.refused(user.getUsername());
             case "yubikey_cert", "browser_cert" -> certificateIsTheirs(context, user, m);
+            case "totp" -> OtpAuthenticator.usable(user, cfg);
             default -> false;
         };
         boolean broker = inBrokerFlow(authSession);
@@ -253,6 +256,9 @@ public class TemplateAuthenticator implements Authenticator {
         if (PasswordForm.PASSWORD.equals(a.getAuthNote(PasswordForm.METHOD_NOTE))) {
             found.add(PasswordForm.PASSWORD);
         }
+        if (OtpAuthenticator.TOTP.equals(a.getAuthNote(OtpAuthenticator.METHOD_NOTE))) {
+            found.add(OtpAuthenticator.TOTP);
+        }
         Set<String> out = new LinkedHashSet<>();
         for (String m : Methods.IDS) {
             if (found.contains(m) && cfg.on(m)) {
@@ -290,9 +296,15 @@ public class TemplateAuthenticator implements Authenticator {
         return out;
     }
 
-    /** The passkey kinds the person has set up (switched-on ones only). */
+    /**
+     * The methods the person has set up themselves (switched-on ones only):
+     * {@code totp} for an {@code otp} credential, and the passkey kinds.
+     */
     static Set<String> setUp(UserModel user, SigninConfig cfg) {
         Set<String> out = new LinkedHashSet<>();
+        if (cfg.on(OtpAuthenticator.TOTP) && OtpAuthenticator.hasCode(user)) {
+            out.add(OtpAuthenticator.TOTP);
+        }
         for (String k : Methods.PASSKEY_KINDS) {
             if (cfg.on(k) && user.credentialManager().getStoredCredentialsByTypeStream(PasskeyClassifier.typeOf(k)).findAny().isPresent()) {
                 out.add(k);
@@ -347,7 +359,8 @@ public class TemplateAuthenticator implements Authenticator {
     /**
      * The method that signed in this authentication (the strongest one,
      * while on: {@code yubikey_cert > security_key > passkey_device >
-     * browser_cert > passkey_synced > password}, the method table's order),
+     * browser_cert > passkey_synced > totp > password}, the method table's
+     * order),
      * else {@code none}.
      */
     static String freshMethod(AuthenticationSessionModel a, SigninConfig cfg) {

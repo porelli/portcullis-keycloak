@@ -112,6 +112,41 @@ class OfferTest {
         assertEquals(List.of("portcullis-passkey", "portcullis-x509:yubikey_cert"), offered(admin, on), "admin never gets a password");
     }
 
+    /** The code's row only with a known person who may use one and has one, totp on and allowed. */
+    @Test
+    void otpOnlyWithKnownUserAndCredential() {
+        SigninConfig on = Configs.of(Configs.WITH_TOTP, false, "", "");
+        Flow nobody = new Flow();
+        assertFalse(offeredWithOtp(nobody, on).contains("portcullis-otp"), "nobody known");
+        Flow none = new Flow();
+        none.user = none.person("u-alice", "alice").model;
+        assertFalse(offeredWithOtp(none, on).contains("portcullis-otp"), "no otp credential");
+        Flow alice = new Flow();
+        alice.user = alice.person("u-alice", "alice").otp("otp-1", "phone").model;
+        assertEquals(List.of("portcullis-passkey", "portcullis-password-form", "portcullis-otp"), offeredWithOtp(alice, on));
+        Flow off = new Flow();
+        off.user = off.person("u-alice", "alice").otp("otp-1", "phone").model;
+        assertFalse(offeredWithOtp(off, Configs.of(Configs.WITH_PASSWORD, false, "", "")).contains("portcullis-otp"), "totp off");
+        Flow asked = new Flow();
+        asked.user = asked.person("u-alice", "alice").otp("otp-1", "phone").model;
+        asked.clientNotes.put(PcMethod.CLIENT_NOTE, "security_key");
+        assertFalse(offeredWithOtp(asked, on).contains("portcullis-otp"), "pc_method asks another");
+        Flow code = new Flow();
+        code.user = code.person("u-alice", "alice").otp("otp-1", "phone").model;
+        code.clientNotes.put(PcMethod.CLIENT_NOTE, "totp");
+        assertEquals(List.of("portcullis-otp"), offeredWithOtp(code, on).stream().filter(s -> !s.equals("portcullis-passkey")).toList());
+        Flow admin = new Flow();
+        admin.user = admin.person("u-admin", "admin").otp("otp-1", "phone").model;
+        assertFalse(offeredWithOtp(admin, on).contains("portcullis-otp"), "admin");
+    }
+
+    private static List<String> offeredWithOtp(Flow f, SigninConfig cfg) {
+        f.selections = new ArrayList<>(List.of(option(f, PasskeyAuthenticatorFactory.PROVIDER_ID),
+                option(f, PasswordFormFactory.PROVIDER_ID), option(f, OtpAuthenticatorFactory.PROVIDER_ID)));
+        Offer.usableOnly(f.context, cfg);
+        return f.selections.stream().map(o -> o.getAuthenticationExecution().getAuthenticator()).toList();
+    }
+
     @Test
     void browserExecutionOfferedOnlyWhenBrowserCertOn() {
         SigninConfig on = Configs.of(X509AuthenticatorTest.ALL, false, "", "");

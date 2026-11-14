@@ -10,6 +10,11 @@ final class Configs {
     static final String DEFAULT_METHODS = "\"passkey_device\", \"passkey_synced\", \"security_key\", \"yubikey_cert\"";
     static final String WITH_PASSWORD = "\"passkey_device\", \"passkey_synced\", \"password\", \"security_key\", \"yubikey_cert\"";
 
+    /** The default methods plus password and totp (sorted, as the Hub writes them). */
+    static final String WITH_TOTP = "\"passkey_device\", \"passkey_synced\", \"password\", \"security_key\", \"totp\", \"yubikey_cert\"";
+    /** The built-in password-and-code: all of password, totp. */
+    static final String PASSWORD_AND_CODE = "{\"op\": \"all\", \"items\": [\"password\", \"totp\"]}";
+
     static final String STANDARD = """
         {"op": "any", "items": [
           {"op": "any", "items": ["passkey_synced", "passkey_device", "security_key"]},

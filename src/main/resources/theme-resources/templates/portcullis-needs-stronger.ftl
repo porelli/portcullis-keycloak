@@ -34,6 +34,7 @@
             <p>
                 <#if portcullis.setUpPasskey><a id="portcullis-set-up-passkey" class="${(properties.kcButtonPrimaryClass)!""}" href="${portcullis.signinUrl}">${msg("portcullisSetUpPasskey")}</a></#if>
                 <#if portcullis.setUpSecurityKey><a id="portcullis-set-up-security-key" class="${(properties.kcButtonPrimaryClass)!""}" href="${portcullis.signinUrl}">${msg("portcullisSetUpSecurityKey")}</a></#if>
+                <#if portcullis.setUpAuthenticator><a id="portcullis-set-up-authenticator" class="${(properties.kcButtonPrimaryClass)!""}" href="${portcullis.signinUrl}">${msg("portcullisSetUpAuthenticator")}</a></#if>
                 <a id="portcullis-sign-in-methods" class="${(properties.kcButtonDefaultClass)!""}" href="${portcullis.signinUrl}">${msg("portcullisSignInMethods")}</a>
                 <#if portcullis.askAdmin><span class="portcullis-sub">${msg("portcullisAskAdmin")}</span></#if>
             </p>

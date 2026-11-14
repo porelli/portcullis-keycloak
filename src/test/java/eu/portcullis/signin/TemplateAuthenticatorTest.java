@@ -123,6 +123,93 @@ class TemplateAuthenticatorTest {
         assertEquals(FlowStatus.SUCCESS, f.status);
     }
 
+    /** all[password, totp]: the password, then the flow asks for the code, then the LOGIN names both. */
+    @Test
+    void passwordAndCodeStepByStep() {
+        SigninConfig cfg = Configs.client(Configs.WITH_TOTP, false, Configs.PASSWORD_AND_CODE);
+        Flow f = new Flow();
+        f.user = f.person("u-alice", "alice").otp("otp-1", "phone").model;
+        f.completed("pwd");
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        check(cfg, false).authenticate(f.context);
+        reset(f);
+        assertEquals("totp", f.authNotes.get(PcMethod.STEP_NOTE));
+        assertEquals(java.util.Optional.of("totp"), PcMethod.requested(f.context));
+        assertEquals("password", f.authNotes.get(PasswordForm.METHOD_NOTE), "the password note is kept");
+        // portcullis-otp runs now (the user is known) and signs in with the code.
+        f.completed("pwd", "otp");
+        f.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        check(cfg, false).authenticate(f.context);
+        assertEquals(FlowStatus.SUCCESS, f.status);
+        assertEquals("password,totp", f.eventDetails().get(History.METHODS));
+        assertEquals("password,totp", f.eventDetails().get(History.SESSION));
+        assertEquals("totp", f.clientNotes.get(FreshMapper.NOTE));
+    }
+
+    @Test
+    void otpNoteKeptAcrossAStep() {
+        SigninConfig cfg = Configs.client(Configs.WITH_TOTP, false, Configs.SYNCED_AND_KEY);
+        Flow f = new Flow();
+        f.user = f.person("u-alice", "alice").passkey(PasskeyClassifier.TYPE_SECURITY_KEY, Flow.bytes("k")).otp("otp-1", "phone").model;
+        f.completed("pwd", "otp");
+        f.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        check(cfg, false).authenticate(f.context);
+        // spk missing and not set up, hwk missing: no single-missing candidate the person has → the page.
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status);
+        Flow g = new Flow();
+        g.user = g.person("u-bob", "bob").passkey(PasskeyClassifier.TYPE_SECURITY_KEY, Flow.bytes("k")).otp("otp-1", "phone").model;
+        g.completed("spk", "otp");
+        g.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        check(cfg, false).authenticate(g.context);
+        reset(g);
+        assertEquals("security_key", g.authNotes.get(PcMethod.STEP_NOTE));
+        assertEquals("totp", g.authNotes.get(OtpAuthenticator.METHOD_NOTE), "kept over the reset");
+    }
+
+    @Test
+    void freshOrderTotpAbovePassword() {
+        SigninConfig cfg = Configs.of(Configs.WITH_TOTP, false, "", "");
+        Flow f = new Flow();
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        f.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        assertEquals("totp", TemplateAuthenticator.freshMethod(f.authSession, cfg));
+        f.authNotes.put(PasskeyAuthenticator.KIND_NOTE, "passkey_synced");
+        assertEquals("passkey_synced", TemplateAuthenticator.freshMethod(f.authSession, cfg));
+        Flow off = new Flow();
+        off.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        assertEquals("none", TemplateAuthenticator.freshMethod(off.authSession, Configs.of(Configs.WITH_PASSWORD, false, "", "")));
+        Flow odd = new Flow();
+        odd.authNotes.put(OtpAuthenticator.METHOD_NOTE, "password");
+        assertEquals("none", TemplateAuthenticator.freshMethod(odd.authSession, cfg), "the otp note holds totp only");
+        assertEquals(Set.of(), TemplateAuthenticator.ranMethods(odd.authSession, cfg));
+    }
+
+    @Test
+    void totpNotCandidateWithoutCredential() {
+        SigninConfig cfg = Configs.client(Configs.WITH_TOTP, false, Configs.PASSWORD_AND_CODE);
+        Flow f = new Flow();
+        f.user = f.person("u-alice", "alice").passkey(PasskeyClassifier.TYPE_SYNCED, Flow.bytes("s")).model;
+        f.completed("pwd");
+        f.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        check(cfg, false).authenticate(f.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, f.status, "no code to ask for: the page");
+        assertEquals(TemplateAuthenticator.PAGE, f.page);
+        NeedsStronger page = (NeedsStronger) f.formAttributes.get(TemplateAuthenticator.ATTRIBUTE);
+        assertTrue(page.getAlternatives().get(0).isNotSetUp());
+        assertFalse(page.isSetUpAuthenticator(), "a password session can't add a code (add_stronger off)");
+        assertTrue(page.isAskAdmin());
+
+        // The reserved accounts never get the step, credential or not.
+        Flow admin = new Flow();
+        admin.user = admin.person("u-admin", "admin").otp("otp-1", "phone").model;
+        admin.completed("pwd");
+        check(cfg, false).authenticate(admin.context);
+        assertEquals(FlowStatus.FORCE_CHALLENGE, admin.status);
+        // totp off: the template can't name it (the file would be refused), and setUp never lists it.
+        assertEquals(Set.of(), TemplateAuthenticator.setUp(admin.user, Configs.of(Configs.WITH_PASSWORD, false, "", "")));
+        assertEquals(Set.of("totp"), TemplateAuthenticator.setUp(admin.user, cfg));
+    }
+
     @Test
     void stepFailsWhenTheAccountChanged() {
         SigninConfig cfg = Configs.client(Configs.DEFAULT_METHODS, false, Configs.YUBIKEY_AND_CERT);

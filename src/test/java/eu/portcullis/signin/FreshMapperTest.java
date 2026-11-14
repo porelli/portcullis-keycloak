@@ -2,6 +2,7 @@ package eu.portcullis.signin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -165,6 +166,26 @@ class FreshMapperTest {
         Flow ssoPassword = passwordLogin(RIGHT);
         assertFalse(issue(ssoPassword, WITH_PASSWORD, Map.of(AuthenticationManager.SSO_AUTH, "true"), Map.of())
                 .getOtherClaims().containsKey(FreshMapper.CLAIM));
+    }
+
+    /** A code sign-in gives pc_fresh=totp while totp is on; a password then a code: totp (stronger). */
+    @Test
+    void codeGivesTotp() {
+        SigninConfig cfg = Configs.of(Configs.WITH_TOTP, false, "", "");
+        Flow f = new Flow();
+        f.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        assertEquals("totp", issue(f, cfg, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+        Flow both = new Flow();
+        both.authNotes.put(PasswordForm.METHOD_NOTE, "password");
+        both.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        assertEquals("totp", issue(both, cfg, Map.of(), Map.of()).getOtherClaims().get(FreshMapper.CLAIM));
+        Flow off = new Flow();
+        off.authNotes.put(OtpAuthenticator.METHOD_NOTE, "totp");
+        assertFalse(issue(off, WITH_PASSWORD, Map.of(), Map.of()).getOtherClaims().containsKey(FreshMapper.CLAIM), "totp off");
+        Flow odd = new Flow();
+        odd.authNotes.put(OtpAuthenticator.METHOD_NOTE, "otp");
+        assertFalse(issue(odd, cfg, Map.of(), Map.of()).getOtherClaims().containsKey(FreshMapper.CLAIM), "the amr value is no method");
+        assertTrue(FreshMapper.isFreshMethod("totp"));
     }
 
     @Test
